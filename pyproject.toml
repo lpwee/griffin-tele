@@ -1,12 +1,27 @@
 [project]
 name = "griffin-tele"
 version = "0.1.0"
-description = "Add your description here"
+description = "Camera-based teleoperation for AgileX Piper arm"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "ikpy>=3.3.4",
     "jupyter>=1.1.1",
     "mediapipe>=0.10.21",
     "numpy>=1.26.4",
+    "opencv-python>=4.10.0",
     "pandas>=2.3.3",
 ]
+
+[project.scripts]
+griffin-teleop = "src.teleop:main"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
