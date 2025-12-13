@@ -36,3 +36,11 @@ Ref : https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
 current version >= S-V1.6-3	piper_description.urdf
 [ ] Explore IKPy or PyBullet for solving IK problems
 [ ] Or integrate with MoveIt, will resolve collision and IK
+
+## first-build
+  Run with:
+  ### Mock robot (no hardware)
+  uv run griffin-teleop --mock --camera 0
+
+  ### Real robot
+  uv run griffin-teleop --can can0 --camera 0
