@@ -1,0 +1,12 @@
+[project]
+name = "griffin-tele"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jupyter>=1.1.1",
+    "mediapipe>=0.10.21",
+    "numpy>=1.26.4",
+    "pandas>=2.3.3",
+]
