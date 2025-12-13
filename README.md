@@ -24,6 +24,7 @@ curl -o pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/
 Download the Hands Detection Model for Pinchers
 Ref : https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
 ```
+curl -o hand_landmarker.task -q https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
 ```
 
 

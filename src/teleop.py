@@ -150,7 +150,7 @@ class TeleoperationController:
                 # Display
                 if show_video:
                     display_frame = self._draw_overlay(
-                        frame, arm_pose, robot_target, joint_angles
+                        frame, rgb_frame, arm_pose, robot_target, joint_angles
                     )
                     cv2.imshow("Teleoperation", display_frame)
 
@@ -192,21 +192,39 @@ class TeleoperationController:
     def _draw_overlay(
         self,
         frame: np.ndarray,
+        rgb_frame: np.ndarray,
         arm_pose: ArmPose,
         robot_target: Optional[RobotTarget],
         joint_angles: Optional[JointAngles],
     ) -> np.ndarray:
         """Draw status overlay on frame."""
-        display = frame.copy()
         h, w = frame.shape[:2]
 
+        # Draw skeleton on RGB frame, then convert to BGR
+        annotated_rgb = self.pose_estimator.draw_landmarks(rgb_frame)
+        display = cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR)
+
         # Status background
-        cv2.rectangle(display, (10, 10), (350, 180), (0, 0, 0), -1)
-        cv2.rectangle(display, (10, 10), (350, 180), (255, 255, 255), 1)
+        cv2.rectangle(display, (10, 10), (350, 220), (0, 0, 0), -1)
+        cv2.rectangle(display, (10, 10), (350, 220), (255, 255, 255), 1)
 
         # Status text
         y = 35
         line_height = 22
+
+        # Model info
+        cv2.putText(display, "Pose: MediaPipe Pose Landmarker (33 pts)",
+                   (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+        y += line_height
+
+        # Hand model status
+        if arm_pose.hand_tracked:
+            cv2.putText(display, "Hand: MediaPipe Hand Landmarker (21 pts)",
+                       (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+        else:
+            cv2.putText(display, "Hand: Not detected (using pose fallback)",
+                       (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (128, 128, 128), 1)
+        y += line_height
 
         # Tracking status
         if arm_pose.is_valid:
@@ -266,8 +284,10 @@ def main():
     parser.add_argument("--camera", type=int, default=0, help="Camera device ID")
     parser.add_argument("--mock", action="store_true", help="Use mock robot (no hardware)")
     parser.add_argument("--can", type=str, default="can0", help="CAN interface for real robot")
-    parser.add_argument("--model", type=str, default="pose_landmarker.task",
+    parser.add_argument("--pose-model", type=str, default="pose_landmarker.task",
                        help="Path to MediaPipe pose model")
+    parser.add_argument("--hand-model", type=str, default="hand_landmarker.task",
+                       help="Path to MediaPipe hand model (use 'none' to disable)")
     parser.add_argument("--fps", type=float, default=30.0, help="Target FPS")
     parser.add_argument("--no-video", action="store_true", help="Disable video display")
     parser.add_argument("--left-arm", action="store_true", help="Track left arm instead of right")
@@ -276,10 +296,16 @@ def main():
     # Create components
     print("Initializing...")
 
+    hand_model = args.hand_model if args.hand_model.lower() != "none" else None
+
     pose_estimator = PoseEstimator(
-        model_path=args.model,
+        pose_model_path=args.pose_model,
+        hand_model_path=hand_model,
         use_right_arm=not args.left_arm,
     )
+
+    print(f"Pose model: {args.pose_model}")
+    print(f"Hand model: {hand_model or 'disabled'}")
 
     workspace_mapper = WorkspaceMapper(WorkspaceConfig())
 
