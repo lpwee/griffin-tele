@@ -162,10 +162,11 @@ class TeleoperationController:
                     robot_target = self.workspace_mapper.map_pose(arm_pose)
 
                     if robot_target.is_valid and self.ik_solver is not None:
-                        # Solve IK
+                        # Solve IK (position-only for now - orientation causes failures)
+                        # TODO: Re-enable orientation once mapping is calibrated
                         joint_angles = self.ik_solver.solve(
                             robot_target.position,
-                            robot_target.orientation,
+                            None,  # Disable orientation constraint temporarily
                             self._last_valid_joints,
                         )
 
@@ -333,10 +334,52 @@ class TeleoperationController:
                            (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         y += line_height
 
-        # Draw wrist marker if tracking
+        # Draw workspace limits box and wrist marker if tracking
         if arm_pose.is_valid:
-            wrist_x = int(arm_pose.wrist_position[0] * w)
-            wrist_y = int(arm_pose.wrist_position[1] * h)
+            # Get workspace config for drawing limits
+            cfg = self.workspace_mapper.config
+
+            # Shoulder position (absolute in camera coords)
+            shoulder_x = arm_pose.shoulder_position[0]
+            shoulder_y = arm_pose.shoulder_position[1]
+
+            # Draw workspace limits box (relative to shoulder)
+            # Box corners in pixel coordinates
+            box_left = int((shoulder_x + cfg.operator_x_range[0]) * w)
+            box_right = int((shoulder_x + cfg.operator_x_range[1]) * w)
+            box_top = int((shoulder_y + cfg.operator_y_range[0]) * h)
+            box_bottom = int((shoulder_y + cfg.operator_y_range[1]) * h)
+
+            # Draw workspace box (cyan dashed-style with corners)
+            box_color = (255, 255, 0)  # Cyan in BGR
+            # Draw corner markers instead of full rectangle for less clutter
+            corner_len = 20
+            # Top-left corner
+            cv2.line(display, (box_left, box_top), (box_left + corner_len, box_top), box_color, 2)
+            cv2.line(display, (box_left, box_top), (box_left, box_top + corner_len), box_color, 2)
+            # Top-right corner
+            cv2.line(display, (box_right, box_top), (box_right - corner_len, box_top), box_color, 2)
+            cv2.line(display, (box_right, box_top), (box_right, box_top + corner_len), box_color, 2)
+            # Bottom-left corner
+            cv2.line(display, (box_left, box_bottom), (box_left + corner_len, box_bottom), box_color, 2)
+            cv2.line(display, (box_left, box_bottom), (box_left, box_bottom - corner_len), box_color, 2)
+            # Bottom-right corner
+            cv2.line(display, (box_right, box_bottom), (box_right - corner_len, box_bottom), box_color, 2)
+            cv2.line(display, (box_right, box_bottom), (box_right, box_bottom - corner_len), box_color, 2)
+
+            # Draw shoulder marker (base reference)
+            shoulder_px = int(shoulder_x * w)
+            shoulder_py = int(shoulder_y * h)
+            cv2.drawMarker(display, (shoulder_px, shoulder_py), box_color,
+                          cv2.MARKER_CROSS, 15, 2)
+
+            # Calculate absolute wrist position (shoulder + relative wrist)
+            abs_wrist_x = shoulder_x + arm_pose.wrist_position[0]
+            abs_wrist_y = shoulder_y + arm_pose.wrist_position[1]
+            wrist_x = int(abs_wrist_x * w)
+            wrist_y = int(abs_wrist_y * h)
+
+            # Draw wrist marker
             color = (0, 255, 0) if self._enabled else (128, 128, 128)
             cv2.circle(display, (wrist_x, wrist_y), 15, color, 3)
             cv2.circle(display, (wrist_x, wrist_y), 5, color, -1)
