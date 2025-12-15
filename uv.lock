@@ -504,6 +504,7 @@ source = { editable = "." }
 dependencies = [
     { name = "ikpy" },
     { name = "jupyter" },
+    { name = "matplotlib" },
     { name = "mediapipe" },
     { name = "numpy" },
     { name = "opencv-python" },
@@ -514,6 +515,7 @@ dependencies = [
 requires-dist = [
     { name = "ikpy", specifier = ">=3.3.4" },
     { name = "jupyter", specifier = ">=1.1.1" },
+    { name = "matplotlib", specifier = ">=3.9.0" },
     { name = "mediapipe", specifier = ">=0.10.21" },
     { name = "numpy", specifier = ">=1.26.4" },
     { name = "opencv-python", specifier = ">=4.10.0" },

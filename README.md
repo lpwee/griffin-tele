@@ -38,10 +38,8 @@ current version >= S-V1.6-3	piper_description.urdf
 [ ] Explore IKPy or PyBullet for solving IK problems
 [ ] Or integrate with MoveIt, will resolve collision and IK
 
-## first-build
-  Run with:
-  ### Mock robot (no hardware)
-  uv run griffin-teleop --mock --camera 0
 
-  ### Real robot
-  uv run griffin-teleop --can can0 --camera 0
+
+### Things to think about:
+1. Pose Estimator Shoulder will be the base(?)origin(?) of the URDF 
+2. Wrist Position is the end-effector's target position
