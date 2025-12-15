@@ -11,6 +11,7 @@ from .pose_estimation import PoseEstimator, ArmPose
 from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
 from .inverse_kinematics import PiperIK, JointAngles, IKPY_AVAILABLE
 from .robot_interface import RobotInterface, create_robot, RobotState
+from .camera_capture import CameraCapture
 
 
 class TeleoperationController:
@@ -45,17 +46,17 @@ class TeleoperationController:
         self._enabled = False  # Dead-man switch state
         self._last_valid_joints: Optional[np.ndarray] = None
 
-    def run(self, camera_id: int = 0, show_video: bool = True):
+    def run(self, camera_source: str = "0", show_video: bool = True):
         """Run the teleoperation loop.
 
         Args:
-            camera_id: Camera device ID.
+            camera_source: Camera source (device ID like "0" or stream URL like "http://...").
             show_video: If True, display video with overlay.
         """
         # Initialize camera
-        cap = cv2.VideoCapture(camera_id)
-        if not cap.isOpened():
-            print(f"Error: Could not open camera {camera_id}")
+        cap = CameraCapture(camera_source)
+        if not cap.open():
+            print(f"Error: Could not open camera source: {camera_source}")
             return
 
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -281,7 +282,8 @@ class TeleoperationController:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Camera-based teleoperation for Piper arm")
-    parser.add_argument("--camera", type=int, default=0, help="Camera device ID")
+    parser.add_argument("--camera", type=str, default="0",
+                       help="Camera source: device ID (0, 1, ...) or stream URL (http://...)")
     parser.add_argument("--mock", action="store_true", help="Use mock robot (no hardware)")
     parser.add_argument("--can", type=str, default="can0", help="CAN interface for real robot")
     parser.add_argument("--pose-model", type=str, default="pose_landmarker.task",
@@ -330,7 +332,7 @@ def main():
     )
 
     # Run
-    controller.run(camera_id=args.camera, show_video=not args.no_video)
+    controller.run(camera_source=args.camera, show_video=not args.no_video)
 
     # Cleanup
     pose_estimator.close()
