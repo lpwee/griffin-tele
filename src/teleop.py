@@ -199,14 +199,19 @@ class TeleoperationController:
                     cv2.imshow("Teleoperation", display_frame)
 
                 # Update arm visualization (mock mode only)
+                # Uses IK results directly from current frame
                 if self._arm_viz is not None:
                     target_pos = robot_target.position if robot_target and robot_target.is_valid else None
                     gripper = robot_target.gripper / 0.08 if robot_target and robot_target.is_valid else 0.0
+                    # Use current frame's IK joint angles if valid, otherwise fall back to last valid
+                    viz_joints = joint_angles.angles if (joint_angles and joint_angles.is_valid) else self._last_valid_joints
+                    ik_error = joint_angles.error if joint_angles else 0.0
                     arm_img = self._arm_viz.update(
-                        joint_angles=self._last_valid_joints,
+                        joint_angles=viz_joints,
                         target_position=target_pos,
                         gripper_openness=gripper,
                         is_valid=joint_angles.is_valid if joint_angles else False,
+                        ik_error=ik_error,
                     )
                     cv2.imshow("Piper Arm", arm_img)
 
@@ -355,6 +360,8 @@ def main():
     parser.add_argument("--output", "-o", type=str, default=None,
                        help="Output CSV file for recording joint angles (auto-generated if not specified)")
     parser.add_argument("--no-record", action="store_true", help="Disable joint angle recording")
+    parser.add_argument("--show-arm-viz", action="store_true", help="Show 3D arm visualization (mock mode only)")
+    parser.add_argument("--verbose-ik", action="store_true", help="Print IK solver debug info")
     args = parser.parse_args()
 
     # Create components
@@ -388,7 +395,7 @@ def main():
     ik_solver: Optional[PiperIK] = None
     if IKPY_AVAILABLE:
         try:
-            ik_solver = PiperIK()
+            ik_solver = PiperIK(verbose=args.verbose_ik)
             print("IK solver: enabled")
         except Exception as e:
             print(f"IK solver: disabled ({e})")
@@ -403,7 +410,7 @@ def main():
         workspace_mapper=workspace_mapper,
         ik_solver=ik_solver,
         target_fps=args.fps,
-        show_arm_viz=args.mock,  # Show 3D arm visualization in mock mode
+        show_arm_viz=args.show_arm_viz and args.mock,  # Show 3D arm visualization if requested (mock mode only)
         output_file=output_file,
     )
 
