@@ -1,7 +1,10 @@
 """Main teleoperation loop."""
 
 import argparse
+import os
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -23,6 +26,8 @@ class TeleoperationController:
         workspace_mapper: WorkspaceMapper,
         ik_solver: Optional[PiperIK] = None,
         target_fps: float = 30.0,
+        show_arm_viz: bool = False,
+        output_file: Optional[str] = None,
     ):
         """Initialize teleoperation controller.
 
@@ -32,6 +37,8 @@ class TeleoperationController:
             workspace_mapper: Workspace mapping configuration.
             ik_solver: Inverse kinematics solver. If None, IK is disabled.
             target_fps: Target control loop frequency.
+            show_arm_viz: If True, show 3D arm visualization (only for mock mode).
+            output_file: Path to CSV file for recording joint angles.
         """
         self.robot = robot
         self.pose_estimator = pose_estimator
@@ -39,11 +46,19 @@ class TeleoperationController:
         self.ik_solver = ik_solver
         self.target_fps = target_fps
         self.frame_delay = 1.0 / target_fps
+        self.show_arm_viz = show_arm_viz
+        self.output_file = output_file
 
         # State
         self._running = False
         self._enabled = False  # Dead-man switch state
         self._last_valid_joints: Optional[np.ndarray] = None
+
+        # Arm visualizer (lazy init)
+        self._arm_viz = None
+
+        # Output file handle
+        self._output_handle = None
 
     def run(self, camera_id: int = 0, show_video: bool = True):
         """Run the teleoperation loop.
@@ -78,6 +93,20 @@ class TeleoperationController:
         if show_video:
             cv2.namedWindow("Teleoperation", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Teleoperation", frame_width, frame_height)
+
+        # Setup arm visualizer for mock mode
+        if self.show_arm_viz:
+            from .arm_visualizer import PiperArmVisualizer
+            self._arm_viz = PiperArmVisualizer(width=400, height=400)
+            cv2.namedWindow("Piper Arm", cv2.WINDOW_NORMAL)
+            print("3D arm visualization: enabled")
+
+        # Setup output file for recording joint angles
+        if self.output_file:
+            self._output_handle = open(self.output_file, 'w')
+            # Write CSV header
+            self._output_handle.write("timestamp,joint1,joint2,joint3,joint4,joint5,joint6,gripper\n")
+            print(f"Recording joint angles to: {self.output_file}")
 
         print("\n=== Teleoperation Started ===")
         print("Controls:")
@@ -123,11 +152,12 @@ class TeleoperationController:
                     print("[Teleop] Control DISABLED (open hand)")
                     self._enabled = False
 
-                # Process control if enabled
+                # Process control
                 robot_target: Optional[RobotTarget] = None
                 joint_angles: Optional[JointAngles] = None
 
-                if self._enabled and arm_pose.is_valid:
+                # Always compute IK when pose is valid (for visualization)
+                if arm_pose.is_valid:
                     # Map to robot workspace
                     robot_target = self.workspace_mapper.map_pose(arm_pose)
 
@@ -140,12 +170,26 @@ class TeleoperationController:
                         )
 
                         if joint_angles.is_valid:
-                            # Send to robot
-                            self.robot.set_joint_positions(
-                                joint_angles.angles,
-                                robot_target.gripper,
-                            )
+                            # Always update visualization joints
                             self._last_valid_joints = joint_angles.angles.copy()
+
+                            # Only send to robot if control is enabled (dead-man switch)
+                            if self._enabled:
+                                self.robot.set_joint_positions(
+                                    joint_angles.angles,
+                                    robot_target.gripper,
+                                )
+
+                # Write joint angles to output file (whenever we have valid IK)
+                if self._output_handle is not None and joint_angles is not None and joint_angles.is_valid:
+                    t = time.time() - start_time
+                    angles = joint_angles.angles
+                    gripper = robot_target.gripper if robot_target else 0.0
+                    self._output_handle.write(
+                        f"{t:.4f},{angles[0]:.6f},{angles[1]:.6f},{angles[2]:.6f},"
+                        f"{angles[3]:.6f},{angles[4]:.6f},{angles[5]:.6f},{gripper:.6f}\n"
+                    )
+                    self._output_handle.flush()
 
                 # Display
                 if show_video:
@@ -153,6 +197,18 @@ class TeleoperationController:
                         frame, rgb_frame, arm_pose, robot_target, joint_angles
                     )
                     cv2.imshow("Teleoperation", display_frame)
+
+                # Update arm visualization (mock mode only)
+                if self._arm_viz is not None:
+                    target_pos = robot_target.position if robot_target and robot_target.is_valid else None
+                    gripper = robot_target.gripper / 0.08 if robot_target and robot_target.is_valid else 0.0
+                    arm_img = self._arm_viz.update(
+                        joint_angles=self._last_valid_joints,
+                        target_position=target_pos,
+                        gripper_openness=gripper,
+                        is_valid=joint_angles.is_valid if joint_angles else False,
+                    )
+                    cv2.imshow("Piper Arm", arm_img)
 
                 # Handle keyboard input
                 key = cv2.waitKey(1) & 0xFF
@@ -183,6 +239,11 @@ class TeleoperationController:
             self.robot.disable()
             self.robot.disconnect()
             cap.release()
+            if self._arm_viz is not None:
+                self._arm_viz.close()
+            if self._output_handle is not None:
+                self._output_handle.close()
+                print(f"Joint angles saved to: {self.output_file}")
             cv2.destroyAllWindows()
 
             elapsed = time.time() - start_time
@@ -291,10 +352,25 @@ def main():
     parser.add_argument("--fps", type=float, default=30.0, help="Target FPS")
     parser.add_argument("--no-video", action="store_true", help="Disable video display")
     parser.add_argument("--left-arm", action="store_true", help="Track left arm instead of right")
+    parser.add_argument("--output", "-o", type=str, default=None,
+                       help="Output CSV file for recording joint angles (auto-generated if not specified)")
+    parser.add_argument("--no-record", action="store_true", help="Disable joint angle recording")
     args = parser.parse_args()
 
     # Create components
     print("Initializing...")
+
+    # Generate output filename if recording is enabled
+    output_file = args.output
+    if not args.no_record and output_file is None:
+        # Create outputs directory
+        outputs_dir = Path(__file__).parent.parent / "outputs"
+        outputs_dir.mkdir(exist_ok=True)
+        # Generate timestamped filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = str(outputs_dir / f"joints_{timestamp}.csv")
+    elif args.no_record:
+        output_file = None
 
     hand_model = args.hand_model if args.hand_model.lower() != "none" else None
 
@@ -327,6 +403,8 @@ def main():
         workspace_mapper=workspace_mapper,
         ik_solver=ik_solver,
         target_fps=args.fps,
+        show_arm_viz=args.mock,  # Show 3D arm visualization in mock mode
+        output_file=output_file,
     )
 
     # Run
