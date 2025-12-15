@@ -93,12 +93,13 @@ class CameraCapture:
         self.release()
 
 
-def test_stream(url: str, duration: int = 5):
+def test_stream(url: str, duration: int = 5, show_display: bool = False):
     """Test a camera stream.
 
     Args:
         url: Stream URL or camera ID.
         duration: Test duration in seconds.
+        show_display: If True, attempt to display video (requires X11/display).
     """
     print(f"Testing stream: {url}")
 
@@ -112,9 +113,13 @@ def test_stream(url: str, duration: int = 5):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Stream: {width}x{height}")
 
+    if not show_display:
+        print("Running in headless mode (no display)")
+
     import time
     start_time = time.time()
     frame_count = 0
+    display_available = show_display
 
     try:
         while (time.time() - start_time) < duration:
@@ -126,11 +131,22 @@ def test_stream(url: str, duration: int = 5):
 
             frame_count += 1
 
-            # Display frame
-            cv2.imshow('Stream Test', frame)
+            # Display frame if requested and available
+            if display_available:
+                try:
+                    cv2.imshow('Stream Test', frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                except cv2.error as e:
+                    print(f"Display not available: {e}")
+                    print("Continuing in headless mode...")
+                    display_available = False
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # Print progress every 30 frames
+            if frame_count % 30 == 0:
+                elapsed = time.time() - start_time
+                fps = frame_count / elapsed if elapsed > 0 else 0
+                print(f"  {frame_count} frames, {fps:.1f} FPS", end='\r')
 
     except KeyboardInterrupt:
         print("\nInterrupted")
@@ -138,10 +154,16 @@ def test_stream(url: str, duration: int = 5):
     finally:
         elapsed = time.time() - start_time
         fps = frame_count / elapsed if elapsed > 0 else 0
-        print(f"Received {frame_count} frames in {elapsed:.1f}s ({fps:.1f} FPS)")
+        print(f"\nReceived {frame_count} frames in {elapsed:.1f}s ({fps:.1f} FPS)")
+
+        if frame_count > 0:
+            print("✓ Stream is working!")
+        else:
+            print("✗ No frames received")
 
         cap.release()
-        cv2.destroyAllWindows()
+        if display_available:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
@@ -150,6 +172,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test camera stream")
     parser.add_argument("source", help="Camera ID (0, 1, ...) or stream URL (http://...)")
     parser.add_argument("--duration", type=int, default=5, help="Test duration in seconds")
+    parser.add_argument("--display", action="store_true", help="Show video display (requires X11)")
     args = parser.parse_args()
 
-    test_stream(args.source, args.duration)
+    test_stream(args.source, args.duration, args.display)
