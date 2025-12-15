@@ -121,8 +121,8 @@ class PiperIK:
         best_error = float('inf')
 
         for init_angles in initial_guesses:
-            # Pad initial angles for IKPy (includes base and end effector)
-            initial_full = np.zeros(8)
+            # Pad initial angles for IKPy (chain has 9 links: base + 6 joints + 2 gripper links)
+            initial_full = np.zeros(9)
             initial_full[1:7] = init_angles
 
             # Solve IK
@@ -215,7 +215,7 @@ class PiperIK:
         Returns:
             End effector position [x, y, z] in meters.
         """
-        full_angles = np.zeros(8)
+        full_angles = np.zeros(9)  # Chain has 9 links
         full_angles[1:7] = angles
         fk_result = self._chain.forward_kinematics(full_angles)
         return fk_result[:3, 3]
