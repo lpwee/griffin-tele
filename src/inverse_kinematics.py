@@ -30,93 +30,54 @@ class JointAngles:
 class PiperIK:
     """Inverse kinematics solver for AgileX Piper arm.
 
-    Uses Modified DH parameters from firmware >= S-V1.6-3:
-    Joint | alpha    | a        | d       | theta_offset
-    ------|----------|----------|---------|-------------
-    1     | 0        | 0        | 0.123   | 0
-    2     | -π/2     | 0        | 0       | -172.22°
-    3     | 0        | 0.28503  | 0       | -102.78°
-    4     | π/2      | -0.021984| 0.25075 | 0
-    5     | -π/2     | 0        | 0       | 0
-    6     | π/2      | 0        | 0.091   | 0
+    Loads kinematic chain from URDF file (piper_description.urdf).
     """
 
-    # DH parameters for Piper (firmware >= S-V1.6-3)
-    # Format: (alpha, a, d, theta_offset)
-    DH_PARAMS = [
-        (0.0, 0.0, 0.123, 0.0),
-        (-np.pi / 2, 0.0, 0.0, np.radians(-172.22)),
-        (0.0, 0.28503, 0.0, np.radians(-102.78)),
-        (np.pi / 2, -0.021984, 0.25075, 0.0),
-        (-np.pi / 2, 0.0, 0.0, 0.0),
-        (np.pi / 2, 0.0, 0.091, 0.0),
-    ]
-
-    # Joint limits (radians) - approximate, check actual robot specs
+    # Joint limits (radians) from robot specifications
     JOINT_LIMITS = [
-        (-2.618, 2.618),   # Joint 1: ±150°
-        (-1.571, 1.571),   # Joint 2: ±90°
-        (-1.571, 1.571),   # Joint 3: ±90°
-        (-2.618, 2.618),   # Joint 4: ±150°
-        (-1.571, 1.571),   # Joint 5: ±90°
-        (-2.618, 2.618),   # Joint 6: ±150°
+        (-2.618, 2.618),   # Joint 1: [-150°, 150°]
+        (0, 3.14),         # Joint 2: [0°, 180°]
+        (-2.967, 0),       # Joint 3: [-170°, 0°]
+        (-1.745, 1.745),   # Joint 4: [-100°, 100°]
+        (-1.22, 1.22),     # Joint 5: [-70°, 70°]
+        (-2.0944, 2.0944), # Joint 6: [-120°, 120°]
     ]
 
-    def __init__(self):
-        """Initialize IK solver."""
+    def __init__(self, verbose: bool = False, urdf_path: str = "urdf/piper_description.urdf"):
+        """Initialize IK solver.
+
+        Args:
+            verbose: If True, print debug info for IK solutions.
+            urdf_path: Path to the URDF file describing the robot.
+        """
         if not IKPY_AVAILABLE:
             raise ImportError(
                 "ikpy is required for inverse kinematics. "
                 "Install with: uv add ikpy"
             )
 
-        # Build kinematic chain using IKPy
-        self._chain = self._build_chain()
+        # Build kinematic chain from URDF file
+        import os
+        if not os.path.exists(urdf_path):
+            raise FileNotFoundError(f"URDF file not found at: {urdf_path}")
+
+        self._chain = ikpy.chain.Chain.from_urdf_file(urdf_path)
 
         # Store home position (all zeros after offset)
         self._home_angles = np.zeros(6)
 
-    def _build_chain(self) -> "ikpy.chain.Chain":
-        """Build IKPy kinematic chain from DH parameters."""
-        links = []
+        # Debug logging
+        self.verbose = verbose
+        self._frame_count = 0
+        self._consecutive_failures = 0
 
-        # Base link (fixed)
-        links.append(ikpy.link.OriginLink())
-
-        # Add each joint
-        for i, (alpha, a, d, theta_offset) in enumerate(self.DH_PARAMS):
-            bounds = self.JOINT_LIMITS[i]
-            links.append(
-                ikpy.link.URDFLink(
-                    name=f"joint_{i + 1}",
-                    origin_translation=[a, 0, d],
-                    origin_orientation=[alpha, 0, 0],
-                    rotation=[0, 0, 1],  # Rotation around Z axis
-                    bounds=bounds,
-                )
-            )
-
-        # End effector (fixed)
-        links.append(
-            ikpy.link.URDFLink(
-                name="end_effector",
-                origin_translation=[0, 0, 0],
-                origin_orientation=[0, 0, 0],
-                rotation=None,
-            )
-        )
-
-        return ikpy.chain.Chain(
-            name="piper",
-            links=links,
-            active_links_mask=[False] + [True] * 6 + [False],
-        )
 
     def solve(
         self,
         target_position: np.ndarray,
         target_orientation: Optional[np.ndarray] = None,
         initial_angles: Optional[np.ndarray] = None,
+        max_retries: int = 3,
     ) -> JointAngles:
         """Solve inverse kinematics for target end-effector pose.
 
@@ -126,10 +87,13 @@ class PiperIK:
                               If None, only position is considered.
             initial_angles: Initial guess for joint angles. Uses previous
                           solution or home position if None.
+            max_retries: Number of random restarts to try if initial solve fails.
 
         Returns:
             JointAngles with solution or invalid result if no solution found.
         """
+        self._frame_count += 1
+
         # Build target transformation matrix
         target_matrix = np.eye(4)
         target_matrix[:3, 3] = target_position
@@ -137,63 +101,110 @@ class PiperIK:
         if target_orientation is not None:
             target_matrix[:3, :3] = self._euler_to_rotation(target_orientation)
 
-        # Set initial guess
-        if initial_angles is None:
-            initial_angles = self._home_angles
+        # Try with given initial guess first, then random restarts
+        initial_guesses = []
 
-        # Pad initial angles for IKPy (includes base and end effector)
-        initial_full = np.zeros(8)
-        initial_full[1:7] = initial_angles
+        # First try: use provided initial angles or home
+        if initial_angles is not None:
+            initial_guesses.append(initial_angles.copy())
+        initial_guesses.append(self._home_angles.copy())
 
-        # Solve IK
-        try:
-            if target_orientation is not None:
-                # Full pose IK
-                result = self._chain.inverse_kinematics(
-                    target_matrix,
-                    initial_position=initial_full,
-                    orientation_mode="all",
-                )
-            else:
-                # Position-only IK
-                result = self._chain.inverse_kinematics(
-                    target_matrix,
-                    initial_position=initial_full,
-                    orientation_mode=None,
-                )
+        # Add random restarts within joint limits
+        for _ in range(max_retries):
+            random_angles = np.array([
+                np.random.uniform(low, high)
+                for low, high in self.JOINT_LIMITS
+            ])
+            initial_guesses.append(random_angles)
 
-            # Extract joint angles (skip base and end effector)
-            angles = result[1:7]
+        best_angles = None
+        best_error = float('inf')
 
-            # Verify solution by forward kinematics
-            fk_result = self._chain.forward_kinematics(result)
-            position_error = np.linalg.norm(
-                fk_result[:3, 3] - target_position
-            )
+        for init_angles in initial_guesses:
+            # Pad initial angles for IKPy (includes base and end effector)
+            initial_full = np.zeros(8)
+            initial_full[1:7] = init_angles
 
-            # Check if solution is within bounds
-            in_bounds = all(
-                self.JOINT_LIMITS[i][0] <= angles[i] <= self.JOINT_LIMITS[i][1]
-                for i in range(6)
-            )
+            # Solve IK
+            try:
+                if target_orientation is not None:
+                    # Full pose IK - use inverse_kinematics_frame for 4x4 matrix with orientation
+                    result = self._chain.inverse_kinematics_frame(
+                        target_matrix,
+                        initial_position=initial_full,
+                        orientation_mode="all",
+                    )
+                else:
+                    # Position-only IK - just pass the position vector
+                    result = self._chain.inverse_kinematics(
+                        target_position,
+                        initial_position=initial_full,
+                    )
 
-            is_valid = position_error < 0.01 and in_bounds  # 1cm tolerance
+                # Extract joint angles and compute error
+                angles = result[1:7]
+                fk_result = self._chain.forward_kinematics(result)
+                position_error = np.linalg.norm(fk_result[:3, 3] - target_position)
 
-            if is_valid:
-                self._home_angles = angles.copy()
+                if position_error < best_error:
+                    best_error = position_error
+                    best_angles = angles.copy()
 
-            return JointAngles(
-                angles=angles,
-                is_valid=is_valid,
-                error=position_error,
-            )
+                    # Early exit if good enough
+                    if position_error < 0.005:
+                        break
 
-        except Exception:
+            except Exception:
+                continue
+
+        # Return failure if no solution found
+        if best_angles is None:
+            self._consecutive_failures += 1
+            if self.verbose:
+                print(f"[IK] Frame {self._frame_count}: ✗ No solution found")
+                print(f"     Target pos: {target_position}, orient: {target_orientation}")
             return JointAngles(
                 angles=np.zeros(6),
                 is_valid=False,
                 error=float("inf"),
             )
+
+        # Use best result found
+        angles = best_angles
+        position_error = best_error
+
+        # Check if solution is within bounds
+        in_bounds = all(
+            self.JOINT_LIMITS[i][0] <= angles[i] <= self.JOINT_LIMITS[i][1]
+            for i in range(6)
+        )
+
+        is_valid = position_error < 0.025 and in_bounds  # 2.5cm tolerance
+
+        if is_valid:
+            self._home_angles = angles.copy()
+            self._consecutive_failures = 0
+
+            if self.verbose and self._frame_count % 30 == 0:
+                angles_deg = np.degrees(angles)
+                print(f"[IK] Frame {self._frame_count}: ✓ Valid | "
+                      f"Error: {position_error:.4f}m | "
+                      f"Angles: [{angles_deg[0]:.1f}°, {angles_deg[1]:.1f}°, {angles_deg[2]:.1f}°, "
+                      f"{angles_deg[3]:.1f}°, {angles_deg[4]:.1f}°, {angles_deg[5]:.1f}°]")
+        else:
+            self._consecutive_failures += 1
+            if self.verbose and self._frame_count % 30 == 0:
+                angles_deg = np.degrees(angles)
+                reason = "OOB" if not in_bounds else f"Error {position_error:.4f}m"
+                print(f"[IK] Frame {self._frame_count}: ✗ Invalid ({reason}) | "
+                      f"Angles: [{angles_deg[0]:.1f}°, {angles_deg[1]:.1f}°, {angles_deg[2]:.1f}°, "
+                      f"{angles_deg[3]:.1f}°, {angles_deg[4]:.1f}°, {angles_deg[5]:.1f}°]")
+
+        return JointAngles(
+            angles=angles,
+            is_valid=is_valid,
+            error=position_error,
+        )
 
     def forward_kinematics(self, angles: np.ndarray) -> np.ndarray:
         """Compute forward kinematics.

@@ -12,9 +12,11 @@ class WorkspaceConfig:
     """Configuration for workspace mapping."""
 
     # Robot workspace bounds (meters)
-    robot_x_range: tuple[float, float] = (-0.4, 0.4)  # left/right
-    robot_y_range: tuple[float, float] = (0.1, 0.5)   # forward
-    robot_z_range: tuple[float, float] = (0.0, 0.4)   # up/down
+    # Conservative bounds to stay within Piper's reachable workspace
+    # Max reach ~0.5m, but corners of a box can exceed this
+    robot_x_range: tuple[float, float] = (-0.15, 0.15)  # left/right (30cm total)
+    robot_y_range: tuple[float, float] = (0.20, 0.35)   # forward (15cm depth)
+    robot_z_range: tuple[float, float] = (0.15, 0.30)   # up/down (15cm height)
 
     # Operator workspace bounds (normalized 0-1 coordinates from camera)
     # These define the "active zone" in front of the camera

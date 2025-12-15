@@ -22,16 +22,18 @@ class PiperArmVisualizer:
         (np.pi / 2, 0.0, 0.091, 0.0),
     ]
 
-    def __init__(self, width: int = 400, height: int = 400):
+    def __init__(self, width: int = 400, height: int = 400, interpolation_frames: int = 5):
         """Initialize the visualizer.
 
         Args:
             width: Width of the visualization image.
             height: Height of the visualization image.
+            interpolation_frames: Number of frames to interpolate between IK solutions.
         """
         self.width = width
         self.height = height
         self.dpi = 100
+        self.interpolation_frames = interpolation_frames
 
         # Create figure with dark background
         self.fig = plt.figure(figsize=(width / self.dpi, height / self.dpi), dpi=self.dpi)
@@ -78,6 +80,15 @@ class PiperArmVisualizer:
         self._target_angles: Optional[np.ndarray] = None
         self._gripper_open = 0.0
 
+        # Interpolation state
+        self._interpolation_counter = 0
+        self._interpolated_angles = np.zeros(6)
+
+        # Debug info
+        self._last_ik_error = 0.0
+        self._last_ik_valid = False
+        self._target_position: Optional[np.ndarray] = None
+
     def dh_transform(self, alpha: float, a: float, d: float, theta: float) -> np.ndarray:
         """Compute DH transformation matrix.
 
@@ -100,14 +111,16 @@ class PiperArmVisualizer:
             [0, 0, 0, 1]
         ])
 
-    def forward_kinematics(self, joint_angles: np.ndarray) -> list[np.ndarray]:
+    def forward_kinematics(self, joint_angles: np.ndarray) -> tuple[list[np.ndarray], np.ndarray]:
         """Compute forward kinematics for all joints.
 
         Args:
             joint_angles: Array of 6 joint angles in radians.
 
         Returns:
-            List of 3D positions for base and each joint.
+            Tuple of (positions, end_effector_transform):
+            - positions: List of 3D positions for base and each joint.
+            - end_effector_transform: 4x4 transformation matrix of end effector.
         """
         positions = [np.array([0, 0, 0])]  # Base position
         T = np.eye(4)
@@ -117,7 +130,7 @@ class PiperArmVisualizer:
             T = T @ self.dh_transform(alpha, a, d, theta)
             positions.append(T[:3, 3].copy())
 
-        return positions
+        return positions, T.copy()
 
     def update(
         self,
@@ -125,6 +138,7 @@ class PiperArmVisualizer:
         target_position: Optional[np.ndarray] = None,
         gripper_openness: float = 0.0,
         is_valid: bool = True,
+        ik_error: float = 0.0,
     ) -> np.ndarray:
         """Update visualization and return as BGR image.
 
@@ -133,12 +147,33 @@ class PiperArmVisualizer:
             target_position: Target end-effector position for visualization.
             gripper_openness: Gripper openness (0-1).
             is_valid: Whether the IK solution is valid.
+            ik_error: IK position error in meters.
 
         Returns:
             BGR image as numpy array.
         """
+        # Store debug info
+        self._last_ik_valid = is_valid
+        self._last_ik_error = ik_error
+        self._target_position = target_position.copy() if target_position is not None else None
+
+        # Handle interpolation
         if joint_angles is not None:
-            self._current_angles = joint_angles
+            # New target angles provided
+            # Check if target changed (or first time setting target)
+            if self._target_angles is None or not np.allclose(joint_angles, self._target_angles):
+                self._target_angles = joint_angles.copy()
+                self._interpolation_counter = 0
+                self._interpolated_angles = self._current_angles.copy()
+
+        # Interpolate toward target
+        if self._target_angles is not None and self._interpolation_counter < self.interpolation_frames:
+            t = (self._interpolation_counter + 1) / self.interpolation_frames
+            self._current_angles = (1 - t) * self._interpolated_angles + t * self._target_angles
+            self._interpolation_counter += 1
+        elif self._target_angles is not None:
+            self._current_angles = self._target_angles.copy()
+
         self._gripper_open = gripper_openness
 
         # Clear previous plot
@@ -157,8 +192,8 @@ class PiperArmVisualizer:
         self.ax.set_ylim(-limit, limit)
         self.ax.set_zlim(-0.1, limit)
 
-        # Compute joint positions
-        positions = self.forward_kinematics(self._current_angles)
+        # Compute joint positions and end effector transform
+        positions, ee_transform = self.forward_kinematics(self._current_angles)
 
         # Draw base platform
         self._draw_base()
@@ -184,6 +219,9 @@ class PiperArmVisualizer:
         # Draw gripper
         self._draw_gripper(positions[-2], positions[-1], gripper_openness)
 
+        # Draw XYZ coordinate frame at end effector to show orientation
+        self._draw_coordinate_frame(ee_transform, scale=0.08)
+
         # Draw target position if provided
         if target_position is not None:
             self.ax.scatter(
@@ -198,13 +236,16 @@ class PiperArmVisualizer:
                 color='#ffff00', linestyle='--', alpha=0.5, linewidth=1
             )
 
-        # Draw coordinate frame at base
-        self._draw_coordinate_frame(np.eye(4), scale=0.1)
+        # Draw coordinate frame at base (smaller, no labels)
+        self._draw_coordinate_frame(np.eye(4), scale=0.05, show_labels=False)
 
-        # Title
+        # Title with debug info
         angles_deg = np.degrees(self._current_angles)
+        ik_status = "✓" if self._last_ik_valid else "✗"
+        target_info = f" | Target: [{self._target_position[0]:.3f}, {self._target_position[1]:.3f}, {self._target_position[2]:.3f}]" if self._target_position is not None else ""
         self.ax.set_title(
-            f'Piper Arm - Joints: [{angles_deg[0]:.0f}°, {angles_deg[1]:.0f}°, {angles_deg[2]:.0f}°, '
+            f'Piper Arm {ik_status} IK err: {self._last_ik_error:.4f}m{target_info}\n'
+            f'Joints: [{angles_deg[0]:.0f}°, {angles_deg[1]:.0f}°, {angles_deg[2]:.0f}°, '
             f'{angles_deg[3]:.0f}°, {angles_deg[4]:.0f}°, {angles_deg[5]:.0f}°]',
             color='white', fontsize=8, pad=10
         )
@@ -270,24 +311,36 @@ class PiperArmVisualizer:
             color=self.gripper_color, linewidth=3
         )
 
-    def _draw_coordinate_frame(self, transform: np.ndarray, scale: float = 0.1):
-        """Draw XYZ coordinate frame."""
+    def _draw_coordinate_frame(self, transform: np.ndarray, scale: float = 0.1, show_labels: bool = True):
+        """Draw XYZ coordinate frame.
+
+        Args:
+            transform: 4x4 transformation matrix defining the frame.
+            scale: Length of the axis arrows.
+            show_labels: If True, add X/Y/Z labels at axis tips.
+        """
         origin = transform[:3, 3]
 
         # X axis (red)
         x_end = origin + transform[:3, 0] * scale
         self.ax.plot3D([origin[0], x_end[0]], [origin[1], x_end[1]], [origin[2], x_end[2]],
-                      color='red', linewidth=2, alpha=0.7)
+                      color='red', linewidth=3, alpha=0.9)
+        if show_labels:
+            self.ax.text(x_end[0], x_end[1], x_end[2], 'X', color='red', fontsize=8, fontweight='bold')
 
         # Y axis (green)
         y_end = origin + transform[:3, 1] * scale
         self.ax.plot3D([origin[0], y_end[0]], [origin[1], y_end[1]], [origin[2], y_end[2]],
-                      color='green', linewidth=2, alpha=0.7)
+                      color='lime', linewidth=3, alpha=0.9)
+        if show_labels:
+            self.ax.text(y_end[0], y_end[1], y_end[2], 'Y', color='lime', fontsize=8, fontweight='bold')
 
         # Z axis (blue)
         z_end = origin + transform[:3, 2] * scale
         self.ax.plot3D([origin[0], z_end[0]], [origin[1], z_end[1]], [origin[2], z_end[2]],
-                      color='blue', linewidth=2, alpha=0.7)
+                      color='cyan', linewidth=3, alpha=0.9)
+        if show_labels:
+            self.ax.text(z_end[0], z_end[1], z_end[2], 'Z', color='cyan', fontsize=8, fontweight='bold')
 
     def close(self):
         """Clean up matplotlib resources."""
