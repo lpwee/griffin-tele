@@ -12,7 +12,7 @@ import numpy as np
 
 from .pose_estimation import PoseEstimator, ArmPose
 from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
-from .inverse_kinematics import PiperIK, JointAngles, IKPY_AVAILABLE
+from .inverse_kinematics import PiperIK, JointAngles
 from .robot_interface import RobotInterface, create_robot, RobotState
 from .gripper_controller import GripperController, GripperConfig, GripperState
 
@@ -141,15 +141,17 @@ class TeleoperationController:
                 self.pose_estimator.process_frame(rgb_frame, timestamp_ms)
                 arm_pose = self.pose_estimator.get_arm_pose()
 
-                # Process gripper through dedicated controller
+                # Process gripper through dedicated controller (uses hand landmarks)
                 current_time = time.time() - start_time
                 gripper_state: Optional[GripperState] = None
-                if arm_pose.is_valid and self.gripper_controller is not None:
+                if self.gripper_controller is not None:
+                    hand_landmarks = self.pose_estimator.get_matching_hand()
                     gripper_state = self.gripper_controller.update(
-                        arm_pose.gripper_openness,
+                        hand_landmarks,
                         current_time,
                     )
-                    self._last_gripper_state = gripper_state
+                    if gripper_state is not None:
+                        self._last_gripper_state = gripper_state
 
                 # Process control
                 robot_target: Optional[RobotTarget] = None
@@ -193,7 +195,7 @@ class TeleoperationController:
 
                 # Display
                 display_frame = self._draw_overlay(
-                    frame, rgb_frame, arm_pose, robot_target, joint_angles
+                    frame, rgb_frame, arm_pose, robot_target, joint_angles, gripper_state
                 )
                 cv2.imshow("Teleoperation", display_frame)
 
@@ -263,6 +265,7 @@ class TeleoperationController:
         arm_pose: ArmPose,
         robot_target: Optional[RobotTarget],
         joint_angles: Optional[JointAngles],
+        gripper_state: Optional[GripperState],
     ) -> np.ndarray:
         """Draw status overlay on frame."""
         h, w = frame.shape[:2]
@@ -302,10 +305,13 @@ class TeleoperationController:
                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         y += line_height
 
-        # Gripper openness
-        if arm_pose.is_valid:
-            cv2.putText(display, f"Gripper: {arm_pose.gripper_openness:.2f}",
+        # Gripper state
+        if gripper_state is not None:
+            cv2.putText(display, f"Gripper: {gripper_state.raw_openness:.2f}",
                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        else:
+            cv2.putText(display, "Gripper: No hand",
+                       (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
         y += line_height
 
         # Robot target
@@ -410,15 +416,7 @@ def main():
 
     workspace_mapper = WorkspaceMapper(WorkspaceConfig())
 
-    ik_solver: Optional[PiperIK] = None
-    if IKPY_AVAILABLE:
-        try:
-            ik_solver = PiperIK(verbose=args.verbose_ik)
-            print("IK solver: enabled")
-        except Exception as e:
-            print(f"IK solver: disabled ({e})")
-    else:
-        print("IK solver: disabled (ikpy not installed)")
+    ik_solver = PiperIK(verbose=args.verbose_ik)
 
     robot = create_robot(use_mock=args.mock, can_name=args.can)
 

@@ -22,10 +22,8 @@ class ArmPose:
     shoulder_position: np.ndarray  # shape (3,)
 
     # Hand orientation (roll, pitch, yaw) in radians
+    # Only available when hand is tracked, otherwise zeros
     wrist_orientation: np.ndarray  # shape (3,)
-
-    # Gripper state (0.0 = closed, 1.0 = open)
-    gripper_openness: float
 
     # Confidence/visibility scores
     visibility: float
@@ -33,7 +31,7 @@ class ArmPose:
     # Whether tracking is valid this frame
     is_valid: bool
 
-    # Whether hand landmarks were used (vs just pose landmarks)
+    # Whether hand landmarks were used (required for orientation)
     hand_tracked: bool = False
 
 
@@ -54,28 +52,11 @@ class PoseEstimator:
     LEFT_THUMB = 21
     RIGHT_THUMB = 22
 
-    # MediaPipe Hand landmark indices (21 total)
+    # MediaPipe Hand landmark indices (only those needed for orientation)
     HAND_WRIST = 0
-    HAND_THUMB_CMC = 1
-    HAND_THUMB_MCP = 2
-    HAND_THUMB_IP = 3
-    HAND_THUMB_TIP = 4
     HAND_INDEX_MCP = 5
-    HAND_INDEX_PIP = 6
-    HAND_INDEX_DIP = 7
-    HAND_INDEX_TIP = 8
     HAND_MIDDLE_MCP = 9
-    HAND_MIDDLE_PIP = 10
-    HAND_MIDDLE_DIP = 11
-    HAND_MIDDLE_TIP = 12
-    HAND_RING_MCP = 13
-    HAND_RING_PIP = 14
-    HAND_RING_DIP = 15
-    HAND_RING_TIP = 16
     HAND_PINKY_MCP = 17
-    HAND_PINKY_PIP = 18
-    HAND_PINKY_DIP = 19
-    HAND_PINKY_TIP = 20
 
     def __init__(
         self,
@@ -181,8 +162,9 @@ class PoseEstimator:
     def get_arm_pose(self) -> ArmPose:
         """Extract arm pose from the latest detection results.
 
-        Uses pose landmarks for arm tracking and hand landmarks for
-        precise gripper control and wrist orientation when available.
+        Uses pose landmarks for arm position tracking and hand landmarks
+        for wrist orientation. Orientation is only available when hand
+        is tracked.
 
         Returns:
             ArmPose with current arm state, or invalid pose if no detection.
@@ -207,35 +189,16 @@ class PoseEstimator:
         elbow_pos = np.array([elbow.x, elbow.y, elbow.z])
         wrist_pos = np.array([wrist.x, wrist.y, wrist.z])
 
-        # Get pose landmarks for fallback calculations
-        pinky = pose_landmarks[self.pinky_idx]
-        index_finger = pose_landmarks[self.index_idx]
-        thumb = pose_landmarks[self.thumb_idx]
-
-        # Always use pose-based orientation (forearm direction) for pitch and yaw
-        # This is more stable as it uses larger body landmarks
-        pose_orientation = self._calculate_wrist_orientation(
-            wrist_pos, elbow_pos,
-            np.array([index_finger.x, index_finger.y, index_finger.z]),
-            np.array([pinky.x, pinky.y, pinky.z]),
-        )
-
-        # Try to get hand landmarks for gripper and roll override
-        hand_landmarks = self._get_matching_hand()
+        # Try to get hand landmarks for orientation
+        hand_landmarks = self.get_matching_hand()
         hand_tracked = hand_landmarks is not None
 
         if hand_tracked:
-            # Use hand landmarks for roll (gripper rotation) and gripper openness
-            hand_roll = self._calculate_hand_roll(hand_landmarks)
-            orientation = np.array([hand_roll, pose_orientation[1], pose_orientation[2]])
-            gripper_openness = self._calculate_hand_gripper_openness(hand_landmarks)
+            # Use hand landmarks for full orientation
+            orientation = self._calculate_hand_orientation(hand_landmarks)
         else:
-            # Use full pose-based orientation and gripper
-            orientation = pose_orientation
-            gripper_openness = self._calculate_gripper_openness(
-                np.array([thumb.x, thumb.y, thumb.z]),
-                np.array([index_finger.x, index_finger.y, index_finger.z]),
-            )
+            # No orientation available without hand tracking
+            orientation = np.zeros(3)
 
         # Calculate wrist position relative to shoulder (shoulder = base)
         relative_wrist_pos = wrist_pos - shoulder_pos
@@ -245,13 +208,12 @@ class PoseEstimator:
             elbow_position=elbow_pos,
             shoulder_position=shoulder_pos,
             wrist_orientation=orientation,
-            gripper_openness=gripper_openness,
             visibility=min_vis,
             is_valid=True,
             hand_tracked=hand_tracked,
         )
 
-    def _get_matching_hand(self):
+    def get_matching_hand(self):
         """Get hand landmarks matching the target handedness."""
         if (self._latest_hand_result is None or
             not self._latest_hand_result.hand_landmarks or
@@ -277,10 +239,10 @@ class PoseEstimator:
 
         return None
 
-    def _calculate_hand_orientation(self, hand_landmarks, elbow_pos: np.ndarray) -> np.ndarray:
-        """Calculate wrist orientation from detailed hand landmarks.
+    def _calculate_hand_orientation(self, hand_landmarks) -> np.ndarray:
+        """Calculate wrist orientation from hand landmarks.
 
-        Uses the hand's coordinate frame for more accurate orientation.
+        Uses the hand's coordinate frame for accurate orientation.
         """
         wrist = hand_landmarks[self.HAND_WRIST]
         index_mcp = hand_landmarks[self.HAND_INDEX_MCP]
@@ -327,146 +289,6 @@ class PoseEstimator:
 
         return np.array([roll, pitch, yaw])
 
-    def _calculate_hand_roll(self, hand_landmarks) -> float:
-        """Calculate gripper roll (rotation around forward axis) from hand landmarks.
-
-        Uses the hand's coordinate frame to extract just the roll component,
-        which represents the gripper's twist orientation.
-        """
-        wrist = hand_landmarks[self.HAND_WRIST]
-        index_mcp = hand_landmarks[self.HAND_INDEX_MCP]
-        pinky_mcp = hand_landmarks[self.HAND_PINKY_MCP]
-        middle_mcp = hand_landmarks[self.HAND_MIDDLE_MCP]
-
-        wrist_pos = np.array([wrist.x, wrist.y, wrist.z])
-        index_pos = np.array([index_mcp.x, index_mcp.y, index_mcp.z])
-        pinky_pos = np.array([pinky_mcp.x, pinky_mcp.y, pinky_mcp.z])
-        middle_pos = np.array([middle_mcp.x, middle_mcp.y, middle_mcp.z])
-
-        # Hand forward direction (wrist to middle finger base)
-        forward = middle_pos - wrist_pos
-        forward_norm = np.linalg.norm(forward)
-        if forward_norm < 1e-6:
-            return 0.0
-        forward = forward / forward_norm
-
-        # Hand right direction (pinky to index)
-        right = index_pos - pinky_pos
-        right_norm = np.linalg.norm(right)
-        if right_norm < 1e-6:
-            return 0.0
-        right = right / right_norm
-
-        # Hand up direction (cross product)
-        up = np.cross(forward, right)
-        up_norm = np.linalg.norm(up)
-        if up_norm < 1e-6:
-            return 0.0
-        up = up / up_norm
-
-        # Roll = rotation around forward axis
-        roll = np.arctan2(right[1], up[1])
-        return roll
-
-    def _calculate_hand_gripper_openness(self, hand_landmarks) -> float:
-        """Calculate gripper openness from detailed hand landmarks.
-
-        Uses multiple finger positions for robust fist/open detection.
-        """
-        # Get fingertip and MCP (knuckle) positions
-        thumb_tip = hand_landmarks[self.HAND_THUMB_TIP]
-        index_tip = hand_landmarks[self.HAND_INDEX_TIP]
-        middle_tip = hand_landmarks[self.HAND_MIDDLE_TIP]
-        ring_tip = hand_landmarks[self.HAND_RING_TIP]
-        pinky_tip = hand_landmarks[self.HAND_PINKY_TIP]
-
-        index_mcp = hand_landmarks[self.HAND_INDEX_MCP]
-        middle_mcp = hand_landmarks[self.HAND_MIDDLE_MCP]
-        ring_mcp = hand_landmarks[self.HAND_RING_MCP]
-        pinky_mcp = hand_landmarks[self.HAND_PINKY_MCP]
-
-        wrist = hand_landmarks[self.HAND_WRIST]
-
-        # Calculate finger extension ratios
-        # (distance from wrist to tip) / (distance from wrist to mcp)
-        def finger_extension(tip, mcp):
-            wrist_pos = np.array([wrist.x, wrist.y, wrist.z])
-            tip_pos = np.array([tip.x, tip.y, tip.z])
-            mcp_pos = np.array([mcp.x, mcp.y, mcp.z])
-
-            tip_dist = np.linalg.norm(tip_pos - wrist_pos)
-            mcp_dist = np.linalg.norm(mcp_pos - wrist_pos)
-
-            if mcp_dist < 1e-6:
-                return 1.0
-            return tip_dist / mcp_dist
-
-        # Average extension of 4 fingers (excluding thumb)
-        extensions = [
-            finger_extension(index_tip, index_mcp),
-            finger_extension(middle_tip, middle_mcp),
-            finger_extension(ring_tip, ring_mcp),
-            finger_extension(pinky_tip, pinky_mcp),
-        ]
-        avg_extension = np.mean(extensions)
-
-        # Also check thumb-index pinch distance for gripper
-        thumb_pos = np.array([thumb_tip.x, thumb_tip.y, thumb_tip.z])
-        index_pos = np.array([index_tip.x, index_tip.y, index_tip.z])
-        pinch_dist = np.linalg.norm(thumb_pos - index_pos)
-
-        # Combine: low extension OR small pinch = closed gripper
-        # extension ~1.3 = closed fist, ~1.8 = open hand
-        extension_openness = (avg_extension - 1.3) / 0.5
-        # pinch ~0.02 = pinched, ~0.15 = open
-        pinch_openness = (pinch_dist - 0.02) / 0.13
-
-        # Use minimum (either fist or pinch closes gripper)
-        openness = min(extension_openness, pinch_openness)
-        return float(np.clip(openness, 0.0, 1.0))
-
-    def _calculate_wrist_orientation(
-        self,
-        wrist: np.ndarray,
-        elbow: np.ndarray,
-        index_finger: np.ndarray,
-        pinky: np.ndarray,
-    ) -> np.ndarray:
-        """Calculate wrist orientation from pose landmarks (fallback)."""
-        # Forearm direction (elbow to wrist)
-        forearm = wrist - elbow
-        forearm_norm = np.linalg.norm(forearm)
-        if forearm_norm < 1e-6:
-            return np.zeros(3)
-        forearm = forearm / forearm_norm
-
-        # Hand plane normal (cross product of index-wrist and pinky-wrist)
-        to_index = index_finger - wrist
-        to_pinky = pinky - wrist
-        hand_normal = np.cross(to_index, to_pinky)
-        hand_norm = np.linalg.norm(hand_normal)
-        if hand_norm < 1e-6:
-            hand_normal = np.array([0, 0, 1])
-        else:
-            hand_normal = hand_normal / hand_norm
-
-        # Calculate Euler angles
-        pitch = np.arcsin(np.clip(-forearm[1], -1, 1))
-        yaw = np.arctan2(forearm[0], -forearm[2])
-        roll = np.arctan2(hand_normal[0], hand_normal[1])
-
-        return np.array([roll, pitch, yaw])
-
-    def _calculate_gripper_openness(
-        self,
-        thumb: np.ndarray,
-        index_finger: np.ndarray,
-    ) -> float:
-        """Calculate gripper openness from pose landmarks (fallback)."""
-        distance = np.linalg.norm(thumb - index_finger)
-        openness = (distance - 0.02) / 0.13
-        return float(np.clip(openness, 0.0, 1.0))
-
     def _invalid_pose(self) -> ArmPose:
         """Return an invalid pose marker."""
         return ArmPose(
@@ -474,7 +296,6 @@ class PoseEstimator:
             elbow_position=np.zeros(3),
             shoulder_position=np.zeros(3),
             wrist_orientation=np.zeros(3),
-            gripper_openness=0.0,
             visibility=0.0,
             is_valid=False,
             hand_tracked=False,
