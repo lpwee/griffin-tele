@@ -14,6 +14,7 @@ from .pose_estimation import PoseEstimator, ArmPose
 from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
 from .inverse_kinematics import PiperIK, JointAngles, IKPY_AVAILABLE
 from .robot_interface import RobotInterface, create_robot, RobotState
+from .gripper_controller import GripperController, GripperConfig, GripperState
 
 
 class TeleoperationController:
@@ -25,8 +26,9 @@ class TeleoperationController:
         pose_estimator: PoseEstimator,
         workspace_mapper: WorkspaceMapper,
         ik_solver: Optional[PiperIK] = None,
+        gripper_controller: Optional[GripperController] = None,
         target_fps: float = 30.0,
-        show_arm_viz: bool = False,
+        mock: bool = False,
         output_file: Optional[str] = None,
     ):
         """Initialize teleoperation controller.
@@ -36,23 +38,25 @@ class TeleoperationController:
             pose_estimator: MediaPipe pose estimator.
             workspace_mapper: Workspace mapping configuration.
             ik_solver: Inverse kinematics solver. If None, IK is disabled.
+            gripper_controller: Gripper controller. If None, Gripper is disabled.
             target_fps: Target control loop frequency.
-            show_arm_viz: If True, show 3D arm visualization (only for mock mode).
+            mock: If True, enable mock mode with 3D arm visualization.
             output_file: Path to CSV file for recording joint angles.
         """
         self.robot = robot
         self.pose_estimator = pose_estimator
         self.workspace_mapper = workspace_mapper
         self.ik_solver = ik_solver
+        self.gripper_controller = gripper_controller
         self.target_fps = target_fps
         self.frame_delay = 1.0 / target_fps
-        self.show_arm_viz = show_arm_viz
+        self.mock = mock
         self.output_file = output_file
 
         # State
         self._running = False
-        self._enabled = False  # Dead-man switch state
         self._last_valid_joints: Optional[np.ndarray] = None
+        self._last_gripper_state: Optional[GripperState] = None
 
         # Arm visualizer (lazy init)
         self._arm_viz = None
@@ -60,12 +64,11 @@ class TeleoperationController:
         # Output file handle
         self._output_handle = None
 
-    def run(self, camera_id: int = 0, show_video: bool = True):
+    def run(self, camera_id: int = 0):
         """Run the teleoperation loop.
 
         Args:
             camera_id: Camera device ID.
-            show_video: If True, display video with overlay.
         """
         # Initialize camera
         cap = cv2.VideoCapture(camera_id)
@@ -90,12 +93,11 @@ class TeleoperationController:
             return
 
         # Setup display window
-        if show_video:
-            cv2.namedWindow("Teleoperation", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Teleoperation", frame_width, frame_height)
+        cv2.namedWindow("Teleoperation", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Teleoperation", frame_width, frame_height)
 
         # Setup arm visualizer for mock mode
-        if self.show_arm_viz:
+        if self.mock:
             from .arm_visualizer import PiperArmVisualizer
             self._arm_viz = PiperArmVisualizer(width=400, height=400)
             cv2.namedWindow("Piper Arm", cv2.WINDOW_NORMAL)
@@ -110,8 +112,6 @@ class TeleoperationController:
 
         print("\n=== Teleoperation Started ===")
         print("Controls:")
-        print("  - Make a FIST to enable robot control (dead-man switch)")
-        print("  - Open hand to disable (robot holds position)")
         print("  - Press 'q' to quit")
         print("  - Press 'r' to reset workspace mapping")
         print("  - Press 'e' for emergency stop")
@@ -141,51 +141,50 @@ class TeleoperationController:
                 self.pose_estimator.process_frame(rgb_frame, timestamp_ms)
                 arm_pose = self.pose_estimator.get_arm_pose()
 
-                # Check dead-man switch (closed fist = enabled)
-                # Gripper openness < 0.3 means fist is closed
-                dead_man_active = arm_pose.is_valid and arm_pose.gripper_openness < 0.3
-
-                if dead_man_active and not self._enabled:
-                    print("[Teleop] Control ENABLED (fist detected)")
-                    self._enabled = True
-                elif not dead_man_active and self._enabled:
-                    print("[Teleop] Control DISABLED (open hand)")
-                    self._enabled = False
+                # Process gripper through dedicated controller
+                current_time = time.time() - start_time
+                gripper_state: Optional[GripperState] = None
+                if arm_pose.is_valid and self.gripper_controller is not None:
+                    gripper_state = self.gripper_controller.update(
+                        arm_pose.gripper_openness,
+                        current_time,
+                    )
+                    self._last_gripper_state = gripper_state
 
                 # Process control
                 robot_target: Optional[RobotTarget] = None
                 joint_angles: Optional[JointAngles] = None
 
-                # Always compute IK when pose is valid (for visualization)
+                # Compute IK when pose is valid
                 if arm_pose.is_valid:
-                    # Map to robot workspace
+                    # Map to robot workspace (arm pose only, gripper handled separately)
                     robot_target = self.workspace_mapper.map_pose(arm_pose)
 
                     if robot_target.is_valid and self.ik_solver is not None:
-                        # Solve IK (position-only for now - orientation causes failures)
-                        # TODO: Re-enable orientation once mapping is calibrated
+                        # Solve IK with position and orientation
+                        # Orientation is enabled/disabled via WorkspaceConfig.orientation_enabled
+                        target_orientation = robot_target.orientation if self.workspace_mapper.config.orientation_enabled else None
                         joint_angles = self.ik_solver.solve(
                             robot_target.position,
-                            None,  # Disable orientation constraint temporarily
+                            target_orientation,
                             self._last_valid_joints,
                         )
 
                         if joint_angles.is_valid:
-                            # Always update visualization joints
                             self._last_valid_joints = joint_angles.angles.copy()
 
-                            # Only send to robot if control is enabled (dead-man switch)
-                            if self._enabled:
-                                self.robot.set_joint_positions(
-                                    joint_angles.angles,
-                                    robot_target.gripper,
-                                )
+                            # Send to robot
+                            gripper_pos = gripper_state.position if gripper_state else 0.0
+                            self.robot.set_joint_positions(
+                                joint_angles.angles,
+                                gripper_pos,
+                            )
 
                 # Write joint angles to output file (whenever we have valid IK)
                 if self._output_handle is not None and joint_angles is not None and joint_angles.is_valid:
                     t = time.time() - start_time
                     angles = joint_angles.angles
-                    gripper = robot_target.gripper if robot_target else 0.0
+                    gripper = gripper_state.position if gripper_state else 0.0
                     self._output_handle.write(
                         f"{t:.4f},{angles[0]:.6f},{angles[1]:.6f},{angles[2]:.6f},"
                         f"{angles[3]:.6f},{angles[4]:.6f},{angles[5]:.6f},{gripper:.6f}\n"
@@ -193,24 +192,24 @@ class TeleoperationController:
                     self._output_handle.flush()
 
                 # Display
-                if show_video:
-                    display_frame = self._draw_overlay(
-                        frame, rgb_frame, arm_pose, robot_target, joint_angles
-                    )
-                    cv2.imshow("Teleoperation", display_frame)
+                display_frame = self._draw_overlay(
+                    frame, rgb_frame, arm_pose, robot_target, joint_angles
+                )
+                cv2.imshow("Teleoperation", display_frame)
 
                 # Update arm visualization (mock mode only)
                 # Uses IK results directly from current frame
                 if self._arm_viz is not None:
                     target_pos = robot_target.position if robot_target and robot_target.is_valid else None
-                    gripper = robot_target.gripper / 0.08 if robot_target and robot_target.is_valid else 0.0
+                    # Normalize gripper position (0-0.08m) to openness (0-1) for visualization
+                    gripper_openness_viz = gripper_state.position / 0.08 if gripper_state else 0.0
                     # Use current frame's IK joint angles if valid, otherwise fall back to last valid
                     viz_joints = joint_angles.angles if (joint_angles and joint_angles.is_valid) else self._last_valid_joints
                     ik_error = joint_angles.error if joint_angles else 0.0
                     arm_img = self._arm_viz.update(
                         joint_angles=viz_joints,
                         target_position=target_pos,
-                        gripper_openness=gripper,
+                        gripper_openness=gripper_openness_viz,
                         is_valid=joint_angles.is_valid if joint_angles else False,
                         ik_error=ik_error,
                     )
@@ -222,12 +221,13 @@ class TeleoperationController:
                     print("\nQuitting...")
                     break
                 elif key == ord('r'):
-                    print("Resetting workspace mapping")
+                    print("Resetting workspace mapping and gripper")
                     self.workspace_mapper.reset()
+                    if self.gripper_controller is not None:
+                        self.gripper_controller.reset()
                 elif key == ord('e'):
                     print("EMERGENCY STOP")
                     self.robot.emergency_stop()
-                    self._enabled = False
 
                 # Maintain frame rate
                 elapsed = time.time() - loop_start
@@ -302,18 +302,9 @@ class TeleoperationController:
                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         y += line_height
 
-        # Dead-man switch status
-        if self._enabled:
-            cv2.putText(display, "Control: ENABLED (fist)",
-                       (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        else:
-            cv2.putText(display, "Control: DISABLED",
-                       (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
-        y += line_height
-
         # Gripper openness
         if arm_pose.is_valid:
-            cv2.putText(display, f"Hand: {'FIST' if arm_pose.gripper_openness < 0.3 else 'OPEN'} ({arm_pose.gripper_openness:.2f})",
+            cv2.putText(display, f"Gripper: {arm_pose.gripper_openness:.2f}",
                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         y += line_height
 
@@ -380,9 +371,8 @@ class TeleoperationController:
             wrist_y = int(abs_wrist_y * h)
 
             # Draw wrist marker
-            color = (0, 255, 0) if self._enabled else (128, 128, 128)
-            cv2.circle(display, (wrist_x, wrist_y), 15, color, 3)
-            cv2.circle(display, (wrist_x, wrist_y), 5, color, -1)
+            cv2.circle(display, (wrist_x, wrist_y), 15, (0, 255, 0), 3)
+            cv2.circle(display, (wrist_x, wrist_y), 5, (0, 255, 0), -1)
 
         return display
 
@@ -393,17 +383,9 @@ def main():
     parser.add_argument("--camera", type=int, default=0, help="Camera device ID")
     parser.add_argument("--mock", action="store_true", help="Use mock robot (no hardware)")
     parser.add_argument("--can", type=str, default="can0", help="CAN interface for real robot")
-    parser.add_argument("--pose-model", type=str, default="pose_landmarker.task",
-                       help="Path to MediaPipe pose model")
-    parser.add_argument("--hand-model", type=str, default="hand_landmarker.task",
-                       help="Path to MediaPipe hand model (use 'none' to disable)")
     parser.add_argument("--fps", type=float, default=30.0, help="Target FPS")
-    parser.add_argument("--no-video", action="store_true", help="Disable video display")
     parser.add_argument("--left-arm", action="store_true", help="Track left arm instead of right")
-    parser.add_argument("--output", "-o", type=str, default=None,
-                       help="Output CSV file for recording joint angles (auto-generated if not specified)")
     parser.add_argument("--no-record", action="store_true", help="Disable joint angle recording")
-    parser.add_argument("--show-arm-viz", action="store_true", help="Show 3D arm visualization (mock mode only)")
     parser.add_argument("--verbose-ik", action="store_true", help="Print IK solver debug info")
     args = parser.parse_args()
 
@@ -411,27 +393,20 @@ def main():
     print("Initializing...")
 
     # Generate output filename if recording is enabled
-    output_file = args.output
-    if not args.no_record and output_file is None:
+    output_file = None
+    if not args.no_record:
         # Create outputs directory
         outputs_dir = Path(__file__).parent.parent / "outputs"
         outputs_dir.mkdir(exist_ok=True)
         # Generate timestamped filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = str(outputs_dir / f"joints_{timestamp}.csv")
-    elif args.no_record:
-        output_file = None
-
-    hand_model = args.hand_model if args.hand_model.lower() != "none" else None
 
     pose_estimator = PoseEstimator(
-        pose_model_path=args.pose_model,
-        hand_model_path=hand_model,
+        pose_model_path="pose_landmarker.task",
+        hand_model_path="hand_landmarker.task",
         use_right_arm=not args.left_arm,
     )
-
-    print(f"Pose model: {args.pose_model}")
-    print(f"Hand model: {hand_model or 'disabled'}")
 
     workspace_mapper = WorkspaceMapper(WorkspaceConfig())
 
@@ -453,12 +428,12 @@ def main():
         workspace_mapper=workspace_mapper,
         ik_solver=ik_solver,
         target_fps=args.fps,
-        show_arm_viz=args.show_arm_viz and args.mock,  # Show 3D arm visualization if requested (mock mode only)
+        mock=args.mock,
         output_file=output_file,
     )
 
     # Run
-    controller.run(camera_id=args.camera, show_video=not args.no_video)
+    controller.run(camera_id=args.camera)
 
     # Cleanup
     pose_estimator.close()
