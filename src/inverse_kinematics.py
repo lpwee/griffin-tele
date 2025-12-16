@@ -40,7 +40,7 @@ class PiperIK:
         (-2.967, 0),       # Joint 3: [-170°, 0°]
         (-1.745, 1.745),   # Joint 4: [-100°, 100°]
         (-1.22, 1.22),     # Joint 5: [-70°, 70°]
-        (-1.745, 1.745),   # Joint 6: [-100°, 100°]
+        (-2.0944, 2.0944), # Joint 6: [-120°, 120°]
     ]
 
     def __init__(self, verbose: bool = False, urdf_path: str = "urdf/piper_description.urdf"):
@@ -61,7 +61,23 @@ class PiperIK:
         if not os.path.exists(urdf_path):
             raise FileNotFoundError(f"URDF file not found at: {urdf_path}")
 
-        self._chain = ikpy.chain.Chain.from_urdf_file(urdf_path)
+        # Load chain from URDF, excluding gripper joints (joint7, joint8)
+        # The gripper has prismatic joints that don't affect end-effector pose
+        # and should be controlled separately via GripperController
+        self._chain = ikpy.chain.Chain.from_urdf_file(
+            urdf_path,
+            active_links_mask=[
+                False,  # base_link (fixed)
+                True,   # joint1 (revolute)
+                True,   # joint2 (revolute)
+                True,   # joint3 (revolute)
+                True,   # joint4 (revolute)
+                True,   # joint5 (revolute)
+                True,   # joint6 (revolute)
+                False,  # joint7 (prismatic - gripper, excluded)
+                False,  # joint8 (prismatic - gripper, excluded)
+            ]
+        )
 
         # Store home position (all zeros after offset)
         self._home_angles = np.zeros(6)
