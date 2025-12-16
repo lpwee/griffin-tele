@@ -4,13 +4,8 @@ from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 
-# IKPy import - will be added as dependency
-try:
-    import ikpy.chain
-    import ikpy.link
-    IKPY_AVAILABLE = True
-except ImportError:
-    IKPY_AVAILABLE = False
+import ikpy.chain
+import ikpy.link
 
 
 @dataclass
@@ -50,12 +45,6 @@ class PiperIK:
             verbose: If True, print debug info for IK solutions.
             urdf_path: Path to the URDF file describing the robot.
         """
-        if not IKPY_AVAILABLE:
-            raise ImportError(
-                "ikpy is required for inverse kinematics. "
-                "Install with: uv add ikpy"
-            )
-
         # Build kinematic chain from URDF file
         import os
         if not os.path.exists(urdf_path):
@@ -218,8 +207,8 @@ class PiperIK:
 
         return JointAngles(
             angles=angles,
-            is_valid=is_valid,
-            error=position_error,
+            is_valid=bool(is_valid),
+            error=float(position_error),
         )
 
     def forward_kinematics(self, angles: np.ndarray) -> np.ndarray:
