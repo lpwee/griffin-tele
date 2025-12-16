@@ -40,7 +40,7 @@ class PiperIK:
         (-2.967, 0),       # Joint 3: [-170°, 0°]
         (-1.745, 1.745),   # Joint 4: [-100°, 100°]
         (-1.22, 1.22),     # Joint 5: [-70°, 70°]
-        (-2.0944, 2.0944), # Joint 6: [-120°, 120°]
+        (-1.745, 1.745),   # Joint 6: [-100°, 100°]
     ]
 
     def __init__(self, verbose: bool = False, urdf_path: str = "urdf/piper_description.urdf"):

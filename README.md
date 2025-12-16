@@ -60,3 +60,8 @@ New ranges for relative coordinates (estimated from arm proportions):
 ```
  uv run griffin-teleop --mock --camera 1 --show-arm-viz --verbose-ik --fps 11
 ```
+
+new TODO:
+[ ] measure latency
+[ ] fix orientation detection (see teleop TODO)
+[ ] gripper open close
