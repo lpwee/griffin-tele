@@ -316,17 +316,47 @@ class PiperRobot(RobotInterface):
         self._enabled = False
 
 
-def create_robot(use_mock: bool = True, can_name: str = "can0") -> RobotInterface:
+def create_robot(
+    robot_type: str = "mock",
+    can_name: str = "can0",
+    port: str = "/dev/ttyACM0",
+    use_mock: bool = None,  # Deprecated, use robot_type instead
+) -> RobotInterface:
     """Factory function to create robot interface.
 
     Args:
-        use_mock: If True, create mock robot. Otherwise create real Piper.
-        can_name: CAN interface name for real robot.
+        robot_type: Robot type - "mock", "piper", "s101", "mock_s101"
+        can_name: CAN interface name for Piper robot.
+        port: Serial port for S101 robot.
+        use_mock: Deprecated. Use robot_type="mock" instead.
 
     Returns:
         Robot interface instance.
     """
-    if use_mock:
+    # Handle legacy use_mock parameter
+    if use_mock is not None:
+        import warnings
+        warnings.warn(
+            "use_mock parameter is deprecated. Use robot_type='mock' or 'piper' instead.",
+            DeprecationWarning
+        )
+        if use_mock:
+            return MockRobot()
+        else:
+            return PiperRobot(can_name)
+
+    robot_type = robot_type.lower()
+
+    if robot_type == "mock":
         return MockRobot()
-    else:
+    elif robot_type == "piper":
         return PiperRobot(can_name)
+    elif robot_type == "s101":
+        from src.s101_interface import create_s101_robot
+        return create_s101_robot(use_mock=False, port=port)
+    elif robot_type == "mock_s101":
+        from src.s101_interface import create_s101_robot
+        return create_s101_robot(use_mock=True, port=port)
+    else:
+        raise ValueError(f"Unknown robot type: {robot_type}. "
+                        f"Valid types: mock, piper, s101, mock_s101")

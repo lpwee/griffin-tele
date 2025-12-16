@@ -1,7 +1,7 @@
 [project]
 name = "griffin-tele"
 version = "0.1.0"
-description = "Camera-based teleoperation for AgileX Piper arm"
+description = "Camera-based teleoperation for robot arms (Piper, SO-101/LeRobot)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26.4",
     "opencv-python>=4.10.0",
     "pandas>=2.3.3",
+    "pyserial>=3.5",  # For S101/Feetech servo communication
 ]
 
 [project.scripts]
