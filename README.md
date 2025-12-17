@@ -65,3 +65,5 @@ new TODO:
 [ ] measure latency
 [ ] fix orientation detection (see teleop TODO)
 [ ] gripper open close
+
+[ ] build mock based on provided urdf
