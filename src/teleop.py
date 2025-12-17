@@ -5,16 +5,17 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import cv2
 import numpy as np
 
 from .pose_estimation import PoseEstimator, ArmPose
-from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
+from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget, S101_WORKSPACE_CONFIG
 from .inverse_kinematics import PiperIK, JointAngles
 from .robot_interface import RobotInterface, create_robot, RobotState
 from .gripper_controller import GripperController, GripperConfig, GripperState
+from .s101_kinematics import S101IK
 
 
 class TeleoperationController:
@@ -25,11 +26,12 @@ class TeleoperationController:
         robot: RobotInterface,
         pose_estimator: PoseEstimator,
         workspace_mapper: WorkspaceMapper,
-        ik_solver: Optional[PiperIK] = None,
+        ik_solver: Optional[Union[PiperIK, S101IK]] = None,
         gripper_controller: Optional[GripperController] = None,
         target_fps: float = 30.0,
         mock: bool = False,
         output_file: Optional[str] = None,
+        num_joints: int = 6,
     ):
         """Initialize teleoperation controller.
 
@@ -42,6 +44,7 @@ class TeleoperationController:
             target_fps: Target control loop frequency.
             mock: If True, enable mock mode with 3D arm visualization.
             output_file: Path to CSV file for recording joint angles.
+            num_joints: Number of joints in the robot arm (5 for S101, 6 for Piper).
         """
         self.robot = robot
         self.pose_estimator = pose_estimator
@@ -52,6 +55,7 @@ class TeleoperationController:
         self.frame_delay = 1.0 / target_fps
         self.mock = mock
         self.output_file = output_file
+        self.num_joints = num_joints
 
         # State
         self._running = False
@@ -106,8 +110,9 @@ class TeleoperationController:
         # Setup output file for recording joint angles
         if self.output_file:
             self._output_handle = open(self.output_file, 'w')
-            # Write CSV header
-            self._output_handle.write("timestamp,joint1,joint2,joint3,joint4,joint5,joint6,gripper\n")
+            # Write CSV header based on number of joints
+            joint_cols = ",".join([f"joint{i+1}" for i in range(self.num_joints)])
+            self._output_handle.write(f"timestamp,{joint_cols},gripper\n")
             print(f"Recording joint angles to: {self.output_file}")
 
         print("\n=== Teleoperation Started ===")
@@ -187,10 +192,8 @@ class TeleoperationController:
                     t = time.time() - start_time
                     angles = joint_angles.angles
                     gripper = gripper_state.position if gripper_state else 0.0
-                    self._output_handle.write(
-                        f"{t:.4f},{angles[0]:.6f},{angles[1]:.6f},{angles[2]:.6f},"
-                        f"{angles[3]:.6f},{angles[4]:.6f},{angles[5]:.6f},{gripper:.6f}\n"
-                    )
+                    angles_str = ",".join([f"{a:.6f}" for a in angles])
+                    self._output_handle.write(f"{t:.4f},{angles_str},{gripper:.6f}\n")
                     self._output_handle.flush()
 
                 # Display
@@ -385,10 +388,15 @@ class TeleoperationController:
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description="Camera-based teleoperation for Piper arm")
+    parser = argparse.ArgumentParser(description="Camera-based teleoperation for robot arms")
     parser.add_argument("--camera", type=int, default=0, help="Camera device ID")
+    parser.add_argument("--robot", type=str, default="piper",
+                       choices=["piper", "s101", "mock", "mock_s101"],
+                       help="Robot type (default: piper)")
     parser.add_argument("--mock", action="store_true", help="Use mock robot (no hardware)")
-    parser.add_argument("--can", type=str, default="can0", help="CAN interface for real robot")
+    parser.add_argument("--can", type=str, default="can0", help="CAN interface for Piper robot")
+    parser.add_argument("--port", type=str, default="/dev/tty.usbmodem5AB90690321",
+                       help="Serial port for S101 robot")
     parser.add_argument("--fps", type=float, default=30.0, help="Target FPS")
     parser.add_argument("--left-arm", action="store_true", help="Track left arm instead of right")
     parser.add_argument("--no-record", action="store_true", help="Disable joint angle recording")
@@ -414,11 +422,26 @@ def main():
         use_right_arm=not args.left_arm,
     )
 
-    workspace_mapper = WorkspaceMapper(WorkspaceConfig())
+    # Determine robot type (--mock flag overrides --robot for backward compatibility)
+    if args.mock:
+        robot_type = "mock"
+    else:
+        robot_type = args.robot
 
-    ik_solver = PiperIK(verbose=args.verbose_ik)
+    # Create workspace mapper and IK solver based on robot type
+    if robot_type in ("s101", "mock_s101"):
+        workspace_mapper = WorkspaceMapper(S101_WORKSPACE_CONFIG)
+        ik_solver = S101IK(verbose=args.verbose_ik)
+        print(f"Using S101 workspace config and IK solver")
+    else:
+        workspace_mapper = WorkspaceMapper(WorkspaceConfig())
+        ik_solver = PiperIK(verbose=args.verbose_ik)
+        print(f"Using Piper workspace config and IK solver")
 
-    robot = create_robot(use_mock=args.mock, can_name=args.can)
+    robot = create_robot(robot_type=robot_type, can_name=args.can, port=args.port)
+
+    # S101 has 5 joints, Piper has 6
+    num_joints = 5 if robot_type in ("s101", "mock_s101") else 6
 
     controller = TeleoperationController(
         robot=robot,
@@ -428,6 +451,7 @@ def main():
         target_fps=args.fps,
         mock=args.mock,
         output_file=output_file,
+        num_joints=num_joints,
     )
 
     # Run
