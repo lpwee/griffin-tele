@@ -21,6 +21,11 @@ Ref: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
 curl -o pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task
 ```
 
+smaller model( lite, full, heavy)
+```
+curl -o pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task
+```
+
 Download the Hands Detection Model for Pinchers
 Ref : https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
 ```
