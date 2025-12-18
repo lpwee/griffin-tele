@@ -3,12 +3,68 @@
 import argparse
 import os
 import time
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
+
+
+@dataclass
+class LatencyTracker:
+    """Track per-stage latency with running averages."""
+
+    window_size: int = 30  # Number of frames to average over
+
+    # Per-stage timing buffers (in ms) - initialized in __post_init__
+    _camera: deque = field(default_factory=deque)
+    _pose: deque = field(default_factory=deque)
+    _gripper: deque = field(default_factory=deque)
+    _workspace: deque = field(default_factory=deque)
+    _ik: deque = field(default_factory=deque)
+    _robot: deque = field(default_factory=deque)
+    _display: deque = field(default_factory=deque)
+    _total: deque = field(default_factory=deque)
+
+    def __post_init__(self):
+        # Reinitialize deques with correct maxlen
+        self._camera = deque(maxlen=self.window_size)
+        self._pose = deque(maxlen=self.window_size)
+        self._gripper = deque(maxlen=self.window_size)
+        self._workspace = deque(maxlen=self.window_size)
+        self._ik = deque(maxlen=self.window_size)
+        self._robot = deque(maxlen=self.window_size)
+        self._display = deque(maxlen=self.window_size)
+        self._total = deque(maxlen=self.window_size)
+
+    def record(self, stage: str, duration_ms: float):
+        """Record a timing measurement for a stage."""
+        buf = getattr(self, f"_{stage}", None)
+        if buf is not None:
+            buf.append(duration_ms)
+
+    def avg(self, stage: str) -> float:
+        """Get average latency for a stage in ms."""
+        buf = getattr(self, f"_{stage}", None)
+        if buf is None or len(buf) == 0:
+            return 0.0
+        return sum(buf) / len(buf)
+
+    def get_all_averages(self) -> dict:
+        """Get all stage averages."""
+        return {
+            "camera": self.avg("camera"),
+            "pose": self.avg("pose"),
+            "gripper": self.avg("gripper"),
+            "workspace": self.avg("workspace"),
+            "ik": self.avg("ik"),
+            "robot": self.avg("robot"),
+            "display": self.avg("display"),
+            "total": self.avg("total"),
+        }
 
 from .pose_estimation import PoseEstimator, ArmPose
 from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
@@ -63,6 +119,9 @@ class TeleoperationController:
 
         # Output file handle
         self._output_handle = None
+
+        # Latency tracking
+        self._latency = LatencyTracker(window_size=30)
 
     def run(self, camera_id: int = 0):
         """Run the teleoperation loop.
@@ -125,23 +184,28 @@ class TeleoperationController:
             while self._running:
                 loop_start = time.time()
 
-                # Read frame
+                # === CAMERA STAGE ===
+                t0 = time.perf_counter()
                 ret, frame = cap.read()
                 if not ret:
                     print("Error reading frame")
                     break
-
-                # Convert to RGB for MediaPipe
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                t1 = time.perf_counter()
+                self._latency.record("camera", (t1 - t0) * 1000)
 
                 # Get timestamp
                 timestamp_ms = int((time.time() - start_time) * 1000)
 
-                # Process pose
+                # === POSE STAGE ===
+                t0 = time.perf_counter()
                 self.pose_estimator.process_frame(rgb_frame, timestamp_ms)
                 arm_pose = self.pose_estimator.get_arm_pose()
+                t1 = time.perf_counter()
+                self._latency.record("pose", (t1 - t0) * 1000)
 
-                # Process gripper through dedicated controller (uses hand landmarks)
+                # === GRIPPER STAGE ===
+                t0 = time.perf_counter()
                 current_time = time.time() - start_time
                 gripper_state: Optional[GripperState] = None
                 if self.gripper_controller is not None:
@@ -152,35 +216,45 @@ class TeleoperationController:
                     )
                     if gripper_state is not None:
                         self._last_gripper_state = gripper_state
+                t1 = time.perf_counter()
+                self._latency.record("gripper", (t1 - t0) * 1000)
 
                 # Process control
                 robot_target: Optional[RobotTarget] = None
                 joint_angles: Optional[JointAngles] = None
 
-                # Compute IK when pose is valid
+                # === WORKSPACE + IK + ROBOT STAGES ===
                 if arm_pose.is_valid:
-                    # Map to robot workspace (arm pose only, gripper handled separately)
+                    # Workspace mapping
+                    t0 = time.perf_counter()
                     robot_target = self.workspace_mapper.map_pose(arm_pose)
+                    t1 = time.perf_counter()
+                    self._latency.record("workspace", (t1 - t0) * 1000)
 
                     if robot_target.is_valid and self.ik_solver is not None:
-                        # Solve IK with position and orientation
-                        # Orientation is enabled/disabled via WorkspaceConfig.orientation_enabled
+                        # IK solving
+                        t0 = time.perf_counter()
                         target_orientation = robot_target.orientation if self.workspace_mapper.config.orientation_enabled else None
                         joint_angles = self.ik_solver.solve(
                             robot_target.position,
                             target_orientation,
                             self._last_valid_joints,
                         )
+                        t1 = time.perf_counter()
+                        self._latency.record("ik", (t1 - t0) * 1000)
 
                         if joint_angles.is_valid:
                             self._last_valid_joints = joint_angles.angles.copy()
 
-                            # Send to robot
+                            # Robot command
+                            t0 = time.perf_counter()
                             gripper_pos = gripper_state.position if gripper_state else 0.0
                             self.robot.set_joint_positions(
                                 joint_angles.angles,
                                 gripper_pos,
                             )
+                            t1 = time.perf_counter()
+                            self._latency.record("robot", (t1 - t0) * 1000)
 
                 # Write joint angles to output file (whenever we have valid IK)
                 if self._output_handle is not None and joint_angles is not None and joint_angles.is_valid:
@@ -193,7 +267,8 @@ class TeleoperationController:
                     )
                     self._output_handle.flush()
 
-                # Display
+                # === DISPLAY STAGE ===
+                t0 = time.perf_counter()
                 display_frame = self._draw_overlay(
                     frame, rgb_frame, arm_pose, robot_target, joint_angles, gripper_state
                 )
@@ -216,6 +291,11 @@ class TeleoperationController:
                         ik_error=ik_error,
                     )
                     cv2.imshow("Piper Arm", arm_img)
+                t1 = time.perf_counter()
+                self._latency.record("display", (t1 - t0) * 1000)
+
+                # Record total loop time (before sleep)
+                self._latency.record("total", (time.time() - loop_start) * 1000)
 
                 # Handle keyboard input
                 key = cv2.waitKey(1) & 0xFF
@@ -331,6 +411,37 @@ class TeleoperationController:
                            (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         y += line_height
 
+        # Latency stats (right side)
+        lat = self._latency.get_all_averages()
+        lat_x = w - 180
+        cv2.rectangle(display, (lat_x - 10, 10), (w - 10, 175), (0, 0, 0), -1)
+        cv2.rectangle(display, (lat_x - 10, 10), (w - 10, 175), (255, 255, 255), 1)
+
+        lat_y = 30
+        cv2.putText(display, "Latency (ms)", (lat_x, lat_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        lat_y += 20
+        stages = [
+            ("Camera", "camera"),
+            ("Pose", "pose"),
+            ("Gripper", "gripper"),
+            ("Workspace", "workspace"),
+            ("IK", "ik"),
+            ("Robot", "robot"),
+            ("Display", "display"),
+        ]
+        for label, key in stages:
+            val = lat.get(key, 0)
+            color = (0, 255, 0) if val < 5 else (0, 255, 255) if val < 15 else (0, 0, 255)
+            cv2.putText(display, f"{label}: {val:5.1f}",
+                       (lat_x, lat_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            lat_y += 15
+        # Total
+        total = lat.get("total", 0)
+        color = (0, 255, 0) if total < 33 else (0, 255, 255) if total < 50 else (0, 0, 255)
+        cv2.putText(display, f"Total: {total:5.1f}",
+                   (lat_x, lat_y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
         # Draw workspace limits box and wrist marker if tracking
         if arm_pose.is_valid:
             # Get workspace config for drawing limits
@@ -393,6 +504,8 @@ def main():
     parser.add_argument("--left-arm", action="store_true", help="Track left arm instead of right")
     parser.add_argument("--no-record", action="store_true", help="Disable joint angle recording")
     parser.add_argument("--verbose-ik", action="store_true", help="Print IK solver debug info")
+    parser.add_argument("--no-gripper", action="store_true",
+                        help="Position-only mode: no orientation, no gripper, no hand model")
     args = parser.parse_args()
 
     # Create components
@@ -408,23 +521,32 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = str(outputs_dir / f"joints_{timestamp}.csv")
 
+    # Configure based on --no-gripper flag
+    # When set: position-only mode (no hand model, no orientation, no gripper)
+    hand_model = None if args.no_gripper else "hand_landmarker.task"
+
     pose_estimator = PoseEstimator(
         pose_model_path="pose_landmarker.task",
-        hand_model_path="hand_landmarker.task",
+        hand_model_path=hand_model,
         use_right_arm=not args.left_arm,
     )
 
-    workspace_mapper = WorkspaceMapper(WorkspaceConfig())
+    workspace_config = WorkspaceConfig(orientation_enabled=not args.no_gripper)
+    workspace_mapper = WorkspaceMapper(workspace_config)
 
     ik_solver = PiperIK(verbose=args.verbose_ik)
 
     robot = create_robot(use_mock=args.mock, can_name=args.can)
+
+    # Create gripper controller only if not in position-only mode
+    gripper_controller = None if args.no_gripper else GripperController()
 
     controller = TeleoperationController(
         robot=robot,
         pose_estimator=pose_estimator,
         workspace_mapper=workspace_mapper,
         ik_solver=ik_solver,
+        gripper_controller=gripper_controller,
         target_fps=args.fps,
         mock=args.mock,
         output_file=output_file,

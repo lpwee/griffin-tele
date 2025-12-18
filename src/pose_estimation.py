@@ -3,9 +3,8 @@
 from dataclasses import dataclass
 from typing import Optional
 import numpy as np
+import cv2
 import mediapipe as mp
-from mediapipe import solutions
-from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -309,6 +308,28 @@ class PoseEstimator:
         """Get the latest raw hand detection result."""
         return self._latest_hand_result
 
+    # Pose landmark connections (subset focusing on upper body)
+    POSE_CONNECTIONS = [
+        (11, 12),  # shoulders
+        (11, 13), (13, 15),  # left arm
+        (12, 14), (14, 16),  # right arm
+        (11, 23), (12, 24),  # torso
+        (23, 24),  # hips
+        (15, 17), (15, 19), (15, 21),  # left hand
+        (16, 18), (16, 20), (16, 22),  # right hand
+        (17, 19), (18, 20),  # hand edges
+    ]
+
+    # Hand landmark connections
+    HAND_CONNECTIONS = [
+        (0, 1), (1, 2), (2, 3), (3, 4),  # thumb
+        (0, 5), (5, 6), (6, 7), (7, 8),  # index
+        (0, 9), (9, 10), (10, 11), (11, 12),  # middle
+        (0, 13), (13, 14), (14, 15), (15, 16),  # ring
+        (0, 17), (17, 18), (18, 19), (19, 20),  # pinky
+        (5, 9), (9, 13), (13, 17),  # palm
+    ]
+
     def draw_landmarks(self, rgb_image: np.ndarray) -> np.ndarray:
         """Draw all pose and hand landmarks on image.
 
@@ -319,39 +340,43 @@ class PoseEstimator:
             Image with landmarks drawn.
         """
         annotated = np.copy(rgb_image)
+        h, w = annotated.shape[:2]
 
         # Draw pose landmarks
         if self._latest_pose_result and self._latest_pose_result.pose_landmarks:
             for pose_landmarks in self._latest_pose_result.pose_landmarks:
-                pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-                pose_landmarks_proto.landmark.extend([
-                    landmark_pb2.NormalizedLandmark(
-                        x=landmark.x, y=landmark.y, z=landmark.z
-                    ) for landmark in pose_landmarks
-                ])
-                solutions.drawing_utils.draw_landmarks(
-                    annotated,
-                    pose_landmarks_proto,
-                    solutions.pose.POSE_CONNECTIONS,
-                    solutions.drawing_styles.get_default_pose_landmarks_style()
-                )
+                # Draw connections
+                for start_idx, end_idx in self.POSE_CONNECTIONS:
+                    if start_idx < len(pose_landmarks) and end_idx < len(pose_landmarks):
+                        start = pose_landmarks[start_idx]
+                        end = pose_landmarks[end_idx]
+                        if start.visibility > 0.5 and end.visibility > 0.5:
+                            pt1 = (int(start.x * w), int(start.y * h))
+                            pt2 = (int(end.x * w), int(end.y * h))
+                            cv2.line(annotated, pt1, pt2, (0, 255, 0), 2)
+
+                # Draw landmarks
+                for landmark in pose_landmarks:
+                    if landmark.visibility > 0.5:
+                        pt = (int(landmark.x * w), int(landmark.y * h))
+                        cv2.circle(annotated, pt, 4, (255, 0, 0), -1)
 
         # Draw hand landmarks
         if self._latest_hand_result and self._latest_hand_result.hand_landmarks:
             for hand_landmarks in self._latest_hand_result.hand_landmarks:
-                hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-                hand_landmarks_proto.landmark.extend([
-                    landmark_pb2.NormalizedLandmark(
-                        x=landmark.x, y=landmark.y, z=landmark.z
-                    ) for landmark in hand_landmarks
-                ])
-                solutions.drawing_utils.draw_landmarks(
-                    annotated,
-                    hand_landmarks_proto,
-                    solutions.hands.HAND_CONNECTIONS,
-                    solutions.drawing_styles.get_default_hand_landmarks_style(),
-                    solutions.drawing_styles.get_default_hand_connections_style()
-                )
+                # Draw connections
+                for start_idx, end_idx in self.HAND_CONNECTIONS:
+                    if start_idx < len(hand_landmarks) and end_idx < len(hand_landmarks):
+                        start = hand_landmarks[start_idx]
+                        end = hand_landmarks[end_idx]
+                        pt1 = (int(start.x * w), int(start.y * h))
+                        pt2 = (int(end.x * w), int(end.y * h))
+                        cv2.line(annotated, pt1, pt2, (255, 255, 0), 2)
+
+                # Draw landmarks
+                for landmark in hand_landmarks:
+                    pt = (int(landmark.x * w), int(landmark.y * h))
+                    cv2.circle(annotated, pt, 3, (255, 0, 255), -1)
 
         return annotated
 
