@@ -54,6 +54,9 @@ current version >= S-V1.6-3	piper_description.urdf
 1. Pose Estimator Shoulder will be the base(?)origin(?) of the URDF 
 2. Wrist Position is the end-effector's target position
 
+3. crazy idea: IK to solve for first 5 joints, hand orientation solved by joint6
+4. jerkiness when selecting random solutions from IK
+
 
 New ranges for relative coordinates (estimated from arm proportions):
 
@@ -66,4 +69,3 @@ New ranges for relative coordinates (estimated from arm proportions):
  - X (left/right): arm reaches ~0.25 either side of shoulder → (-0.25, 0.25)
  - Y (up/down): wrist typically below shoulder (positive Y in camera = down) → (-0.05, 0.30)
  - Z (depth): arm extends forward ~0.2 from shoulder plane → (-0.15, 0.20)
-
