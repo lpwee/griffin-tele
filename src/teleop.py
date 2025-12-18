@@ -19,15 +19,15 @@ class LatencyTracker:
 
     window_size: int = 30  # Number of frames to average over
 
-    # Per-stage timing buffers (in ms)
-    _camera: deque = field(default_factory=lambda: deque(maxlen=30))
-    _pose: deque = field(default_factory=lambda: deque(maxlen=30))
-    _gripper: deque = field(default_factory=lambda: deque(maxlen=30))
-    _workspace: deque = field(default_factory=lambda: deque(maxlen=30))
-    _ik: deque = field(default_factory=lambda: deque(maxlen=30))
-    _robot: deque = field(default_factory=lambda: deque(maxlen=30))
-    _display: deque = field(default_factory=lambda: deque(maxlen=30))
-    _total: deque = field(default_factory=lambda: deque(maxlen=30))
+    # Per-stage timing buffers (in ms) - initialized in __post_init__
+    _camera: deque = field(default_factory=deque)
+    _pose: deque = field(default_factory=deque)
+    _gripper: deque = field(default_factory=deque)
+    _workspace: deque = field(default_factory=deque)
+    _ik: deque = field(default_factory=deque)
+    _robot: deque = field(default_factory=deque)
+    _display: deque = field(default_factory=deque)
+    _total: deque = field(default_factory=deque)
 
     def __post_init__(self):
         # Reinitialize deques with correct maxlen
