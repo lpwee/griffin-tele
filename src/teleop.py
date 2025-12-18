@@ -393,6 +393,8 @@ def main():
     parser.add_argument("--left-arm", action="store_true", help="Track left arm instead of right")
     parser.add_argument("--no-record", action="store_true", help="Disable joint angle recording")
     parser.add_argument("--verbose-ik", action="store_true", help="Print IK solver debug info")
+    parser.add_argument("--no-gripper", action="store_true",
+                        help="Position-only mode: no orientation, no gripper, no hand model")
     args = parser.parse_args()
 
     # Create components
@@ -408,23 +410,32 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = str(outputs_dir / f"joints_{timestamp}.csv")
 
+    # Configure based on --no-gripper flag
+    # When set: position-only mode (no hand model, no orientation, no gripper)
+    hand_model = None if args.no_gripper else "hand_landmarker.task"
+
     pose_estimator = PoseEstimator(
         pose_model_path="pose_landmarker.task",
-        hand_model_path="hand_landmarker.task",
+        hand_model_path=hand_model,
         use_right_arm=not args.left_arm,
     )
 
-    workspace_mapper = WorkspaceMapper(WorkspaceConfig())
+    workspace_config = WorkspaceConfig(orientation_enabled=not args.no_gripper)
+    workspace_mapper = WorkspaceMapper(workspace_config)
 
     ik_solver = PiperIK(verbose=args.verbose_ik)
 
     robot = create_robot(use_mock=args.mock, can_name=args.can)
+
+    # Create gripper controller only if not in position-only mode
+    gripper_controller = None if args.no_gripper else GripperController()
 
     controller = TeleoperationController(
         robot=robot,
         pose_estimator=pose_estimator,
         workspace_mapper=workspace_mapper,
         ik_solver=ik_solver,
+        gripper_controller=gripper_controller,
         target_fps=args.fps,
         mock=args.mock,
         output_file=output_file,
