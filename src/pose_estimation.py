@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Optional
 import numpy as np
+import cv2
 import mediapipe as mp
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
