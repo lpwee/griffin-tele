@@ -1,9 +1,9 @@
 """Verify the new workspace bounds are all reachable."""
 
-from src.inverse_kinematics import PiperIK
+from src.inverse_kinematics import RobotIK
 import numpy as np
 
-ik = PiperIK()
+ik = RobotIK(urdf_path="urdf/piper_description.urdf")
 
 # New workspace bounds
 x_range = (-0.15, 0.15)

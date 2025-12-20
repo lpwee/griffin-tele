@@ -1,9 +1,9 @@
 """Find the actual reachable workspace of the Piper arm."""
 
-from src.inverse_kinematics import PiperIK
+from src.inverse_kinematics import RobotIK
 import numpy as np
 
-ik = PiperIK()
+ik = RobotIK(urdf_path="urdf/piper_description.urdf")
 
 # Calculate theoretical max reach from DH params
 # Link lengths from DH: d1=0.123, a3=0.28503, d4=0.25075, d6=0.091

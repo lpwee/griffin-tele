@@ -14,6 +14,7 @@ class WorkspaceConfig:
     # Robot workspace bounds (meters)
     # Based on IK reachability analysis and 626mm working radius spec
     # Robot X = forward reach, Y = left/right, Z = up/down
+    # Default values are for Piper arm
     robot_x_range: tuple[float, float] = (0.15, 0.40)   # forward reach
     robot_y_range: tuple[float, float] = (-0.25, 0.25)  # left/right
     robot_z_range: tuple[float, float] = (0.05, 0.35)   # up/down
@@ -58,6 +59,14 @@ class WorkspaceConfig:
         (-1.0, 1.5),   # pitch limits (-57° to +86°)
         (-1.5, 1.5),   # yaw limits (±86°)
     )
+
+
+# S101-specific workspace configuration (smaller arm)
+S101_WORKSPACE_CONFIG = WorkspaceConfig(
+    robot_x_range=(0.08, 0.25),   # forward reach (smaller)
+    robot_y_range=(-0.15, 0.15),  # left/right (narrower)
+    robot_z_range=(0.02, 0.25),   # up/down (lower max height)
+)
 
 
 @dataclass

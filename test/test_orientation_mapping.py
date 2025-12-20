@@ -20,7 +20,10 @@ End-effector orientation at home position (all joints = 0):
 """
 
 import numpy as np
-from src.inverse_kinematics import PiperIK, IKPY_AVAILABLE
+from src.inverse_kinematics import RobotIK
+
+# IKPy is always available (it's a dependency)
+IKPY_AVAILABLE = True
 
 
 def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -58,7 +61,7 @@ def analyze_robot_home_orientation():
         print("IKPy not available, skipping robot analysis")
         return
 
-    ik = PiperIK()
+    ik = RobotIK(urdf_path="urdf/piper_description.urdf")
 
     print("=" * 60)
     print("ROBOT END-EFFECTOR ORIENTATION ANALYSIS")
@@ -148,7 +151,7 @@ def test_ik_with_orientation():
         print("IKPy not available")
         return
 
-    ik = PiperIK()
+    ik = RobotIK(urdf_path="urdf/piper_description.urdf")
 
     print("\n" + "=" * 60)
     print("IK SOLVER ORIENTATION TESTS")
@@ -265,7 +268,7 @@ def test_ik_with_mapped_orientation():
 
     from src.workspace_mapping import WorkspaceMapper, WorkspaceConfig
 
-    ik = PiperIK()
+    ik = RobotIK(urdf_path="urdf/piper_description.urdf")
     mapper = WorkspaceMapper(WorkspaceConfig())
 
     print("\n" + "=" * 60)
