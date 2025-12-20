@@ -3,7 +3,7 @@
 __version__ = "0.1.0"
 
 from .gripper_controller import GripperController, GripperConfig, GripperState
-from .inverse_kinematics import PiperIK, JointAngles
+from .inverse_kinematics import RobotIK, JointAngles, create_robot_ik
 from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
 from .pose_estimation import PoseEstimator, ArmPose
 from .robot_interface import RobotInterface, create_robot, RobotState
@@ -14,9 +14,10 @@ __all__ = [
     "GripperController",
     "GripperConfig",
     "GripperState",
-    # Inverse kinematics (6-DOF arm only)
-    "PiperIK",
+    # Inverse kinematics - unified
+    "RobotIK",
     "JointAngles",
+    "create_robot_ik",
     # Workspace mapping
     "WorkspaceMapper",
     "WorkspaceConfig",

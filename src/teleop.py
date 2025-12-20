@@ -5,17 +5,16 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import cv2
 import numpy as np
 
 from .pose_estimation import PoseEstimator, ArmPose
 from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget, S101_WORKSPACE_CONFIG
-from .inverse_kinematics import PiperIK, JointAngles
+from .inverse_kinematics import RobotIK, JointAngles
 from .robot_interface import RobotInterface, create_robot, RobotState
 from .gripper_controller import GripperController, GripperConfig, GripperState
-from .s101_kinematics import S101IK
 
 
 class TeleoperationController:
@@ -26,12 +25,11 @@ class TeleoperationController:
         robot: RobotInterface,
         pose_estimator: PoseEstimator,
         workspace_mapper: WorkspaceMapper,
-        ik_solver: Optional[Union[PiperIK, S101IK]] = None,
+        ik_solver: Optional[RobotIK] = None,
         gripper_controller: Optional[GripperController] = None,
         target_fps: float = 30.0,
         mock: bool = False,
         output_file: Optional[str] = None,
-        num_joints: int = 6,
     ):
         """Initialize teleoperation controller.
 
@@ -44,7 +42,6 @@ class TeleoperationController:
             target_fps: Target control loop frequency.
             mock: If True, enable mock mode with 3D arm visualization.
             output_file: Path to CSV file for recording joint angles.
-            num_joints: Number of joints in the robot arm (5 for S101, 6 for Piper).
         """
         self.robot = robot
         self.pose_estimator = pose_estimator
@@ -55,7 +52,8 @@ class TeleoperationController:
         self.frame_delay = 1.0 / target_fps
         self.mock = mock
         self.output_file = output_file
-        self.num_joints = num_joints
+        # Get number of joints from IK solver
+        self.num_joints = ik_solver.num_joints if ik_solver else 6
 
         # State
         self._running = False
@@ -431,17 +429,14 @@ def main():
     # Create workspace mapper and IK solver based on robot type
     if robot_type in ("s101", "mock_s101"):
         workspace_mapper = WorkspaceMapper(S101_WORKSPACE_CONFIG)
-        ik_solver = S101IK(verbose=args.verbose_ik)
+        ik_solver = RobotIK(urdf_path="urdf/s101.urdf", verbose=args.verbose_ik)
         print(f"Using S101 workspace config and IK solver")
     else:
         workspace_mapper = WorkspaceMapper(WorkspaceConfig())
-        ik_solver = PiperIK(verbose=args.verbose_ik)
+        ik_solver = RobotIK(urdf_path="urdf/piper_description.urdf", verbose=args.verbose_ik)
         print(f"Using Piper workspace config and IK solver")
 
     robot = create_robot(robot_type=robot_type, can_name=args.can, port=args.port)
-
-    # S101 has 5 joints, Piper has 6
-    num_joints = 5 if robot_type in ("s101", "mock_s101") else 6
 
     controller = TeleoperationController(
         robot=robot,
@@ -451,7 +446,6 @@ def main():
         target_fps=args.fps,
         mock=args.mock,
         output_file=output_file,
-        num_joints=num_joints,
     )
 
     # Run

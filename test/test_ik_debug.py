@@ -1,9 +1,9 @@
 """Debug IK issues."""
 
-from src.inverse_kinematics import PiperIK
+from src.inverse_kinematics import RobotIK
 import numpy as np
 
-ik = PiperIK(verbose=True)
+ik = RobotIK(urdf_path="urdf/piper_description.urdf", verbose=True)
 
 # These simple positions should definitely be reachable
 test_cases = [

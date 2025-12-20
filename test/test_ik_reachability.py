@@ -1,9 +1,9 @@
 """Test IK reachability for various positions."""
 
-from src.inverse_kinematics import PiperIK
+from src.inverse_kinematics import RobotIK
 import numpy as np
 
-ik = PiperIK(verbose=True)
+ik = RobotIK(urdf_path="urdf/piper_description.urdf", verbose=True)
 
 # Test various target positions to see which ones fail
 test_positions = [
