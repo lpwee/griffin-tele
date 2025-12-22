@@ -9,7 +9,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Set up environment, run.
 ```
 uv sync
-uv run griffin-teleop --mock --camera 1
+uv run griffin-teleop --mock --camera 1 --no-gripper
 ```
 
 
@@ -18,14 +18,9 @@ uv run griffin-teleop --mock --camera 1
 Download the Pose Detection Model
 Ref: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker (Three sizes, lite, full, heavy)
 ```
-curl -o pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task
-```
-```
 curl -o pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task
 ```
-```
-curl -o pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
-```
+
 
 Download the Hands Detection Model for Pinchers
 Ref : https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
@@ -57,15 +52,15 @@ current version >= S-V1.6-3	piper_description.urdf
 3. crazy idea: IK to solve for first 5 joints, hand orientation solved by joint6
 4. jerkiness when selecting random solutions from IK
 
+Possible approaches to Z coordinate problem
+- [ ] IMU
+- [ ] MoCap Balls
+- [ ] DepthAnything
+- [ ] RGB-D
 
-New ranges for relative coordinates (estimated from arm proportions):
 
- Assuming:
- - Typical arm length (shoulder to wrist): ~60cm
- - Camera view width: ~200cm at operating distance
- - Normalized arm reach: ~0.3 (60/200)
+RGB ONLY ROUTE
+1. Mediapipe output -> Pixels (based on image width)
+2. Pixels to real world(arm) opencv calibration(chessboard thingy)
+3. Derive the intrinsics (which is a multiplier from pixel space to real world space)
 
- Relative wrist position (wrist - shoulder) typical ranges:
- - X (left/right): arm reaches ~0.25 either side of shoulder → (-0.25, 0.25)
- - Y (up/down): wrist typically below shoulder (positive Y in camera = down) → (-0.05, 0.30)
- - Z (depth): arm extends forward ~0.2 from shoulder plane → (-0.15, 0.20)

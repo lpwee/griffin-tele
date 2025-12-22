@@ -161,6 +161,20 @@ class MockRobot(RobotInterface):
 
         return True
 
+    def move_joints(self, positions, gripper):
+        
+        if not self._enabled:
+            return False
+
+        self._target_positions = positions.copy()
+        if gripper is not None:
+            self._target_gripper = gripper
+
+        if self._simulate_latency:
+            time.sleep(0.001)  # 1ms simulated latency
+
+        return True
+
     def emergency_stop(self) -> None:
         print("[MockRobot] EMERGENCY STOP")
         self._enabled = False
@@ -283,6 +297,7 @@ class PiperRobot(RobotInterface):
         try:
             # Convert radians to degrees (or motor units as needed)
             positions_deg = np.degrees(positions)
+            print(f"[PiperRobot] Setting joint positions (radians): {positions}")
 
             # Send joint command
             # Note: Actual piper_sdk API may differ - adjust as needed
@@ -297,6 +312,25 @@ class PiperRobot(RobotInterface):
                 int(positions_deg[5] * 1000),
             )
 
+
+            if gripper is not None:
+                # Gripper in mm
+                self._piper.GripperCtrl(int(gripper * 1000), 500)
+
+            return True
+        except Exception as e:
+            print(f"[PiperRobot   ] Command error: {e}")
+            return False
+
+    def move_joints(self, positions, gripper):
+        factor = 57324.850764
+        spd_percent = 100
+        try:
+            print(f"[PiperRobot move_joints] Setting joint positions (radians): {positions}")
+            self._piper.MotionCtrl_2(0x01, 0x01, spd_percent)
+            joint_vals = [round(q*factor) for q in positions]            
+            self._piper.JointCtrl(joint_vals[0], joint_vals[1], joint_vals[2], joint_vals[3], joint_vals[4], joint_vals[5])
+            
             if gripper is not None:
                 # Gripper in mm
                 self._piper.GripperCtrl(int(gripper * 1000), 500)

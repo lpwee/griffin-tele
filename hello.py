@@ -55,7 +55,7 @@ def main():
     global annotated_frame
 
     # STEP 1: Create a PoseLandmarker object for live stream.
-    base_options = python.BaseOptions(model_asset_path='pose_landmarker.task')
+    base_options = python.BaseOptions(model_asset_path='/home/charan/griffin-tele/pose_landmarker.task')
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
         output_segmentation_masks=True,

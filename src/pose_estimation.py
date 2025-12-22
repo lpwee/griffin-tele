@@ -149,6 +149,29 @@ class PoseEstimator:
             rgb_frame: RGB image as numpy array (H, W, 3).
             timestamp_ms: Timestamp in milliseconds.
         """
+        # MediaPipe expects a contiguous uint8 RGB image with shape (H, W, 3).
+        if rgb_frame is None:
+            raise ValueError("PoseEstimator.process_frame received None for rgb_frame")
+
+        if not isinstance(rgb_frame, np.ndarray):
+            raise ValueError(
+                f"PoseEstimator.process_frame expected np.ndarray, "
+                f"got {type(rgb_frame)}"
+            )
+
+        if rgb_frame.ndim != 3 or rgb_frame.shape[2] != 3:
+            raise ValueError(
+                "PoseEstimator.process_frame expected image with shape "
+                "(H, W, 3), got "
+                f"{rgb_frame.shape}"
+            )
+
+        # Ensure correct dtype and memory layout
+        if rgb_frame.dtype != np.uint8:
+            rgb_frame = rgb_frame.astype(np.uint8)
+
+        rgb_frame = np.ascontiguousarray(rgb_frame)
+
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
         # Run pose detection
@@ -201,6 +224,7 @@ class PoseEstimator:
 
         # Calculate wrist position relative to shoulder (shoulder = base)
         relative_wrist_pos = wrist_pos - shoulder_pos
+        print("Relative wrist position:", relative_wrist_pos)
 
         return ArmPose(
             wrist_position=relative_wrist_pos,

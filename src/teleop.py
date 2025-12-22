@@ -249,10 +249,11 @@ class TeleoperationController:
                             # Robot command
                             t0 = time.perf_counter()
                             gripper_pos = gripper_state.position if gripper_state else 0.0
-                            self.robot.set_joint_positions(
-                                joint_angles.angles,
-                                gripper_pos,
-                            )
+                            # self.robot.set_joint_positions(
+                            #     joint_angles.angles,
+                            #     gripper_pos,
+                            # )
+                            self.robot.move_joints(joint_angles.angles, gripper_pos)
                             t1 = time.perf_counter()
                             self._latency.record("robot", (t1 - t0) * 1000)
 
@@ -324,8 +325,8 @@ class TeleoperationController:
         finally:
             # Cleanup
             self._running = False
-            self.robot.disable()
-            self.robot.disconnect()
+            # self.robot.disable()
+            # self.robot.disconnect()
             cap.release()
             if self._arm_viz is not None:
                 self._arm_viz.close()
