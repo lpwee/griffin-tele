@@ -126,24 +126,29 @@ class WebcamCamera(CameraInterface):
 
 
 class OrbbecCamera(CameraInterface):
-    """Orbbec Gemini E RGB-D camera using pyorbbecsdk."""
+    """Orbbec Gemini E RGB-D camera using pyorbbecsdk.
+
+    Supported resolutions for Gemini E:
+        Depth: 1024x768 @ 5-10fps, 640x480 @ 30fps, 512x384 @ 30fps
+        Color: 1920x1080 @ 30fps
+    """
 
     def __init__(
         self,
-        color_width: int = 1280,
-        color_height: int = 720,
-        depth_width: int = 1280,
-        depth_height: int = 720,
+        color_width: int = 1920,
+        color_height: int = 1080,
+        depth_width: int = 640,
+        depth_height: int = 480,
         fps: int = 30,
     ):
         """Initialize Orbbec camera.
 
         Args:
-            color_width: Color stream width.
-            color_height: Color stream height.
-            depth_width: Depth stream width.
-            depth_height: Depth stream height.
-            fps: Target framerate.
+            color_width: Color stream width (default 1920 for 1080p).
+            color_height: Color stream height (default 1080 for 1080p).
+            depth_width: Depth stream width (default 640 for 30fps support).
+            depth_height: Depth stream height (default 480 for 30fps support).
+            fps: Target framerate (default 30).
         """
         self._color_width = color_width
         self._color_height = color_height
@@ -184,16 +189,28 @@ class OrbbecCamera(CameraInterface):
             # Enable color stream
             color_profiles = self._pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
             color_profile = None
+            # First try: exact match with resolution and fps
             for i in range(color_profiles.get_count()):
                 profile = color_profiles.get_video_stream_profile(i)
                 if (profile.get_width() == self._color_width and
                     profile.get_height() == self._color_height and
-                    profile.get_format() == OBFormat.RGB):
+                    profile.get_format() == OBFormat.RGB and
+                    profile.get_fps() == self._fps):
                     color_profile = profile
                     break
 
+            # Second try: match resolution, any fps
             if color_profile is None:
-                # Fall back to first available RGB profile
+                for i in range(color_profiles.get_count()):
+                    profile = color_profiles.get_video_stream_profile(i)
+                    if (profile.get_width() == self._color_width and
+                        profile.get_height() == self._color_height and
+                        profile.get_format() == OBFormat.RGB):
+                        color_profile = profile
+                        break
+
+            # Fall back to first available RGB profile
+            if color_profile is None:
                 for i in range(color_profiles.get_count()):
                     profile = color_profiles.get_video_stream_profile(i)
                     if profile.get_format() == OBFormat.RGB:
@@ -207,26 +224,39 @@ class OrbbecCamera(CameraInterface):
                 return False
 
             self._config.enable_stream(color_profile)
-            print(f"[Camera] Color stream: {self._color_width}x{self._color_height}")
+            actual_color_fps = color_profile.get_fps()
+            print(f"[Camera] Color stream: {self._color_width}x{self._color_height} @ {actual_color_fps}fps")
 
             # Enable depth stream
             depth_profiles = self._pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
             depth_profile = None
+            # First try: exact match with resolution and fps
             for i in range(depth_profiles.get_count()):
                 profile = depth_profiles.get_video_stream_profile(i)
                 if (profile.get_width() == self._depth_width and
-                    profile.get_height() == self._depth_height):
+                    profile.get_height() == self._depth_height and
+                    profile.get_fps() == self._fps):
                     depth_profile = profile
                     break
 
+            # Second try: match resolution, any fps
             if depth_profile is None:
-                # Fall back to first available depth profile
+                for i in range(depth_profiles.get_count()):
+                    profile = depth_profiles.get_video_stream_profile(i)
+                    if (profile.get_width() == self._depth_width and
+                        profile.get_height() == self._depth_height):
+                        depth_profile = profile
+                        break
+
+            # Fall back to first available depth profile
+            if depth_profile is None:
                 depth_profile = depth_profiles.get_video_stream_profile(0)
                 self._depth_width = depth_profile.get_width()
                 self._depth_height = depth_profile.get_height()
 
             self._config.enable_stream(depth_profile)
-            print(f"[Camera] Depth stream: {self._depth_width}x{self._depth_height}")
+            actual_depth_fps = depth_profile.get_fps()
+            print(f"[Camera] Depth stream: {self._depth_width}x{self._depth_height} @ {actual_depth_fps}fps")
 
             # Enable depth-to-color alignment
             self._config.set_align_mode(OBAlignMode.SW_MODE)
