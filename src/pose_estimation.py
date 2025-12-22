@@ -1,22 +1,30 @@
 """Pose estimation module using MediaPipe Pose and Hands."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import numpy as np
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+if TYPE_CHECKING:
+    from .depth_processor import DepthProcessor
+    from .camera import CameraIntrinsics
+
 
 @dataclass
 class ArmPose:
     """Extracted arm pose from MediaPipe landmarks."""
 
-    # Wrist position in normalized coordinates (0-1)
+    # Wrist position relative to shoulder
+    # For webcam: normalized coordinates (0-1 range)
+    # For RGB-D: metric coordinates in meters (camera frame)
     wrist_position: np.ndarray  # shape (3,) - x, y, z
 
-    # Elbow and shoulder for orientation calculation
+    # Elbow and shoulder positions
+    # For webcam: normalized coordinates
+    # For RGB-D: absolute 3D positions in meters (camera frame)
     elbow_position: np.ndarray  # shape (3,)
     shoulder_position: np.ndarray  # shape (3,)
 
@@ -32,6 +40,13 @@ class ArmPose:
 
     # Whether hand landmarks were used (required for orientation)
     hand_tracked: bool = False
+
+    # Whether positions are in metric coordinates (meters)
+    # True for RGB-D mode, False for webcam mode
+    is_metric: bool = False
+
+    # Whether depth lookup succeeded (only relevant when is_metric=True)
+    depth_valid: bool = False
 
 
 class PoseEstimator:
@@ -64,8 +79,9 @@ class PoseEstimator:
         use_right_arm: bool = True,
         min_visibility: float = 0.5,
         min_hand_confidence: float = 0.5,
+        depth_processor: Optional["DepthProcessor"] = None,
     ):
-        """Initialize pose estimator with optional hand tracking.
+        """Initialize pose estimator with optional hand tracking and depth.
 
         Args:
             pose_model_path: Path to the MediaPipe pose landmarker model.
@@ -74,6 +90,7 @@ class PoseEstimator:
             use_right_arm: If True, track right arm; otherwise left arm.
             min_visibility: Minimum visibility score for pose landmarks.
             min_hand_confidence: Minimum confidence for hand detection.
+            depth_processor: Optional depth processor for RGB-D mode.
         """
         self.use_right_arm = use_right_arm
         self.min_visibility = min_visibility
@@ -81,6 +98,11 @@ class PoseEstimator:
         self._latest_pose_result: Optional[vision.PoseLandmarkerResult] = None
         self._latest_hand_result: Optional[vision.HandLandmarkerResult] = None
         self._use_hand_model = hand_model_path is not None
+
+        # Depth processing for RGB-D mode
+        self._depth_processor = depth_processor
+        self._current_depth_frame: Optional[np.ndarray] = None
+        self._current_intrinsics: Optional["CameraIntrinsics"] = None
 
         # Set landmark indices based on arm choice
         if use_right_arm:
@@ -142,13 +164,25 @@ class PoseEstimator:
         """Callback for async hand detection results."""
         self._latest_hand_result = result
 
-    def process_frame(self, rgb_frame: np.ndarray, timestamp_ms: int) -> None:
+    def process_frame(
+        self,
+        rgb_frame: np.ndarray,
+        timestamp_ms: int,
+        depth_frame: Optional[np.ndarray] = None,
+        intrinsics: Optional["CameraIntrinsics"] = None,
+    ) -> None:
         """Process a frame asynchronously with both pose and hand models.
 
         Args:
             rgb_frame: RGB image as numpy array (H, W, 3).
             timestamp_ms: Timestamp in milliseconds.
+            depth_frame: Optional aligned depth image (H, W) in mm.
+            intrinsics: Optional camera intrinsics for 3D deprojection.
         """
+        # Store depth data for get_arm_pose
+        self._current_depth_frame = depth_frame
+        self._current_intrinsics = intrinsics
+
         # MediaPipe expects a contiguous uint8 RGB image with shape (H, W, 3).
         if rgb_frame is None:
             raise ValueError("PoseEstimator.process_frame received None for rgb_frame")
@@ -185,8 +219,8 @@ class PoseEstimator:
         """Extract arm pose from the latest detection results.
 
         Uses pose landmarks for arm position tracking and hand landmarks
-        for wrist orientation. Orientation is only available when hand
-        is tracked.
+        for wrist orientation. When depth data is available, provides
+        metric 3D positions; otherwise uses normalized camera coordinates.
 
         Returns:
             ArmPose with current arm state, or invalid pose if no detection.
@@ -206,7 +240,34 @@ class PoseEstimator:
         if min_vis < self.min_visibility:
             return self._invalid_pose()
 
-        # Extract arm positions from pose
+        # Check if we should use depth-based 3D reconstruction
+        use_depth = (
+            self._current_depth_frame is not None
+            and self._current_intrinsics is not None
+            and self._depth_processor is not None
+        )
+
+        if use_depth:
+            # Try to get metric 3D positions using depth
+            arm_pose = self._get_arm_pose_with_depth(
+                shoulder, elbow, wrist, min_vis
+            )
+            if arm_pose is not None:
+                return arm_pose
+            # Fall through to normalized mode if depth fails
+
+        # Fallback: normalized coordinates (webcam mode)
+        return self._get_arm_pose_normalized(shoulder, elbow, wrist, min_vis)
+
+    def _get_arm_pose_normalized(
+        self,
+        shoulder,
+        elbow,
+        wrist,
+        visibility: float,
+    ) -> ArmPose:
+        """Get arm pose using normalized camera coordinates (webcam mode)."""
+        # Extract arm positions from pose (normalized 0-1)
         shoulder_pos = np.array([shoulder.x, shoulder.y, shoulder.z])
         elbow_pos = np.array([elbow.x, elbow.y, elbow.z])
         wrist_pos = np.array([wrist.x, wrist.y, wrist.z])
@@ -216,24 +277,101 @@ class PoseEstimator:
         hand_tracked = hand_landmarks is not None
 
         if hand_tracked:
-            # Use hand landmarks for full orientation
             orientation = self._calculate_hand_orientation(hand_landmarks)
         else:
-            # No orientation available without hand tracking
             orientation = np.zeros(3)
 
-        # Calculate wrist position relative to shoulder (shoulder = base)
+        # Calculate wrist position relative to shoulder
         relative_wrist_pos = wrist_pos - shoulder_pos
-        print("Relative wrist position:", relative_wrist_pos)
 
         return ArmPose(
             wrist_position=relative_wrist_pos,
             elbow_position=elbow_pos,
             shoulder_position=shoulder_pos,
             wrist_orientation=orientation,
-            visibility=min_vis,
+            visibility=visibility,
             is_valid=True,
             hand_tracked=hand_tracked,
+            is_metric=False,
+            depth_valid=False,
+        )
+
+    def _get_arm_pose_with_depth(
+        self,
+        shoulder,
+        elbow,
+        wrist,
+        visibility: float,
+    ) -> Optional[ArmPose]:
+        """Get arm pose using depth data for metric 3D positions.
+
+        Args:
+            shoulder, elbow, wrist: MediaPipe landmark objects.
+            visibility: Minimum visibility score.
+
+        Returns:
+            ArmPose with metric positions, or None if depth lookup fails.
+        """
+        intrinsics = self._current_intrinsics
+        depth = self._current_depth_frame
+        h, w = depth.shape
+
+        # Convert normalized coords to pixels
+        def to_pixel(landmark):
+            return int(landmark.x * w), int(landmark.y * h)
+
+        shoulder_px = to_pixel(shoulder)
+        elbow_px = to_pixel(elbow)
+        wrist_px = to_pixel(wrist)
+
+        # Lookup depth for each joint
+        shoulder_depth = self._depth_processor.lookup_depth(
+            depth, shoulder_px[0], shoulder_px[1], "shoulder"
+        )
+        elbow_depth = self._depth_processor.lookup_depth(
+            depth, elbow_px[0], elbow_px[1], "elbow"
+        )
+        wrist_depth = self._depth_processor.lookup_depth(
+            depth, wrist_px[0], wrist_px[1], "wrist"
+        )
+
+        # All joints need valid depth
+        if None in (shoulder_depth, elbow_depth, wrist_depth):
+            return None
+
+        # Deproject to 3D (meters, camera frame)
+        shoulder_3d = self._depth_processor.deproject(
+            shoulder_px[0], shoulder_px[1], shoulder_depth, intrinsics
+        )
+        elbow_3d = self._depth_processor.deproject(
+            elbow_px[0], elbow_px[1], elbow_depth, intrinsics
+        )
+        wrist_3d = self._depth_processor.deproject(
+            wrist_px[0], wrist_px[1], wrist_depth, intrinsics
+        )
+
+        # Compute relative wrist position (key output for IK)
+        relative_wrist = wrist_3d - shoulder_3d
+
+        # Get orientation from hand landmarks
+        hand_landmarks = self.get_matching_hand()
+        hand_tracked = hand_landmarks is not None
+
+        if hand_tracked:
+            orientation = self._calculate_hand_orientation(hand_landmarks)
+        else:
+            orientation = np.zeros(3)
+
+        return ArmPose(
+            wrist_position=relative_wrist,
+            elbow_position=elbow_3d,
+            shoulder_position=shoulder_3d,
+            wrist_orientation=orientation,
+            visibility=visibility,
+            is_valid=True,
+            hand_tracked=hand_tracked,
+            is_metric=True,
+            depth_valid=True,
         )
 
     def get_matching_hand(self):
@@ -322,6 +460,8 @@ class PoseEstimator:
             visibility=0.0,
             is_valid=False,
             hand_tracked=False,
+            is_metric=False,
+            depth_valid=False,
         )
 
     def get_latest_pose_result(self) -> Optional[vision.PoseLandmarkerResult]:

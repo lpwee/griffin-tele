@@ -8,6 +8,8 @@ from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
 from .pose_estimation import PoseEstimator, ArmPose
 from .robot_interface import RobotInterface, create_robot, RobotState
 from .teleop import TeleoperationController
+from .camera import CameraInterface, WebcamCamera, OrbbecCamera, create_camera, CameraFrame, CameraIntrinsics
+from .depth_processor import DepthProcessor, DepthConfig
 
 __all__ = [
     # Gripper control (separate from IK)
@@ -30,4 +32,14 @@ __all__ = [
     "RobotState",
     # Main controller
     "TeleoperationController",
+    # Camera abstraction
+    "CameraInterface",
+    "WebcamCamera",
+    "OrbbecCamera",
+    "create_camera",
+    "CameraFrame",
+    "CameraIntrinsics",
+    # Depth processing
+    "DepthProcessor",
+    "DepthConfig",
 ]
