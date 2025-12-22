@@ -120,12 +120,22 @@ class TeleoperationController:
 
         # Arm visualizer (lazy init)
         self._arm_viz = None
+        self._robot_pov_viz = None
+        self._show_robot_pov = False
 
         # Output file handle
         self._output_handle = None
 
         # Latency tracking
         self._latency = LatencyTracker(window_size=30)
+
+    def enable_robot_pov(self, enabled: bool = True):
+        """Enable or disable Robot POV visualization.
+
+        Args:
+            enabled: If True, show Robot POV visualization window.
+        """
+        self._show_robot_pov = enabled
 
     def run(self, camera_id: int = 0, prefer_rgbd: bool = True):
         """Run the teleoperation loop.
@@ -168,6 +178,13 @@ class TeleoperationController:
             self._arm_viz = PiperArmVisualizer(width=400, height=400)
             cv2.namedWindow("Piper Arm", cv2.WINDOW_NORMAL)
             print("3D arm visualization: enabled")
+
+        # Setup Robot POV visualizer
+        if self._show_robot_pov:
+            from .robot_pov_visualizer import RobotPOVVisualizer
+            self._robot_pov_viz = RobotPOVVisualizer(width=500, height=500)
+            cv2.namedWindow("Robot POV", cv2.WINDOW_NORMAL)
+            print("Robot POV visualization: enabled")
 
         # Setup output file for recording joint angles
         if self.output_file:
@@ -303,6 +320,18 @@ class TeleoperationController:
                         ik_error=ik_error,
                     )
                     cv2.imshow("Piper Arm", arm_img)
+
+                # Update Robot POV visualization
+                if self._robot_pov_viz is not None:
+                    gripper_openness_viz = gripper_state.position / 0.08 if gripper_state else 0.0
+                    viz_joints = joint_angles.angles if (joint_angles and joint_angles.is_valid) else self._last_valid_joints
+                    pov_img = self._robot_pov_viz.update(
+                        arm_pose=arm_pose,
+                        joint_angles=viz_joints,
+                        gripper_openness=gripper_openness_viz,
+                        is_valid=joint_angles.is_valid if joint_angles else False,
+                    )
+                    cv2.imshow("Robot POV", pov_img)
                 t1 = time.perf_counter()
                 self._latency.record("display", (t1 - t0) * 1000)
 
@@ -342,6 +371,8 @@ class TeleoperationController:
                 self._camera.close()
             if self._arm_viz is not None:
                 self._arm_viz.close()
+            if self._robot_pov_viz is not None:
+                self._robot_pov_viz.close()
             if self._output_handle is not None:
                 self._output_handle.close()
                 print(f"Joint angles saved to: {self.output_file}")
@@ -519,6 +550,8 @@ def main():
     parser.add_argument("--verbose-ik", action="store_true", help="Print IK solver debug info")
     parser.add_argument("--no-gripper", action="store_true",
                         help="Position-only mode: no orientation, no gripper, no hand model")
+    parser.add_argument("--show-robot-pov", action="store_true",
+                        help="Show Robot POV visualization (operator arm + robot FK arm)")
     # RGB-D camera options
     parser.add_argument("--no-depth", action="store_true",
                         help="Force webcam mode, disable RGB-D camera")
@@ -581,6 +614,10 @@ def main():
         mock=args.mock,
         output_file=output_file,
     )
+
+    # Enable Robot POV visualization if requested
+    if args.show_robot_pov:
+        controller.enable_robot_pov(True)
 
     # Run
     prefer_rgbd = not args.no_depth

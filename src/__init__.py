@@ -10,6 +10,7 @@ from .robot_interface import RobotInterface, create_robot, RobotState
 from .teleop import TeleoperationController
 from .camera import CameraInterface, WebcamCamera, OrbbecCamera, create_camera, CameraFrame, CameraIntrinsics
 from .depth_processor import DepthProcessor, DepthConfig
+from .robot_pov_visualizer import RobotPOVVisualizer, RobotPOVConfig
 
 __all__ = [
     # Gripper control (separate from IK)
@@ -42,4 +43,7 @@ __all__ = [
     # Depth processing
     "DepthProcessor",
     "DepthConfig",
+    # Robot POV visualization
+    "RobotPOVVisualizer",
+    "RobotPOVConfig",
 ]
