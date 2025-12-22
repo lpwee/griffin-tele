@@ -1,7 +1,6 @@
 """Main teleoperation loop."""
 
 import argparse
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -71,6 +70,8 @@ from .workspace_mapping import WorkspaceMapper, WorkspaceConfig, RobotTarget
 from .inverse_kinematics import PiperIK, JointAngles
 from .robot_interface import RobotInterface, create_robot, RobotState
 from .gripper_controller import GripperController, GripperConfig, GripperState
+from .camera import CameraInterface, create_camera, CameraFrame
+from .depth_processor import DepthProcessor, DepthConfig
 
 
 class TeleoperationController:
@@ -86,6 +87,7 @@ class TeleoperationController:
         target_fps: float = 30.0,
         mock: bool = False,
         output_file: Optional[str] = None,
+        camera: Optional[CameraInterface] = None,
     ):
         """Initialize teleoperation controller.
 
@@ -98,6 +100,7 @@ class TeleoperationController:
             target_fps: Target control loop frequency.
             mock: If True, enable mock mode with 3D arm visualization.
             output_file: Path to CSV file for recording joint angles.
+            camera: Camera interface. If None, created during run().
         """
         self.robot = robot
         self.pose_estimator = pose_estimator
@@ -108,6 +111,7 @@ class TeleoperationController:
         self.frame_delay = 1.0 / target_fps
         self.mock = mock
         self.output_file = output_file
+        self._camera = camera
 
         # State
         self._running = False
@@ -123,32 +127,35 @@ class TeleoperationController:
         # Latency tracking
         self._latency = LatencyTracker(window_size=30)
 
-    def run(self, camera_id: int = 0):
+    def run(self, camera_id: int = 0, prefer_rgbd: bool = True):
         """Run the teleoperation loop.
 
         Args:
-            camera_id: Camera device ID.
+            camera_id: Camera device ID (for webcam fallback).
+            prefer_rgbd: If True, try RGB-D camera first.
         """
-        # Initialize camera
-        cap = cv2.VideoCapture(camera_id)
-        if not cap.isOpened():
-            print(f"Error: Could not open camera {camera_id}")
-            return
+        # Initialize camera using abstraction layer
+        if self._camera is None:
+            try:
+                self._camera = create_camera(prefer_rgbd=prefer_rgbd, camera_id=camera_id)
+            except RuntimeError as e:
+                print(f"Error: {e}")
+                return
 
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"Camera: {frame_width}x{frame_height}")
+        frame_width, frame_height = self._camera.resolution
+        has_depth = self._camera.has_depth()
+        print(f"Camera: {frame_width}x{frame_height}, depth={'enabled' if has_depth else 'disabled'}")
 
         # Connect and enable robot
         if not self.robot.connect():
             print("Error: Could not connect to robot")
-            cap.release()
+            self._camera.close()
             return
 
         if not self.robot.enable():
             print("Error: Could not enable robot")
             self.robot.disconnect()
-            cap.release()
+            self._camera.close()
             return
 
         # Setup display window
@@ -186,20 +193,24 @@ class TeleoperationController:
 
                 # === CAMERA STAGE ===
                 t0 = time.perf_counter()
-                ret, frame = cap.read()
-                if not ret:
+                camera_frame = self._camera.read()
+                if camera_frame is None:
                     print("Error reading frame")
                     break
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb_frame = camera_frame.rgb
+                # Convert RGB to BGR for OpenCV display (will be done later)
+                frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
                 t1 = time.perf_counter()
                 self._latency.record("camera", (t1 - t0) * 1000)
 
-                # Get timestamp
-                timestamp_ms = int((time.time() - start_time) * 1000)
-
                 # === POSE STAGE ===
                 t0 = time.perf_counter()
-                self.pose_estimator.process_frame(rgb_frame, timestamp_ms)
+                self.pose_estimator.process_frame(
+                    rgb_frame,
+                    camera_frame.timestamp_ms,
+                    depth_frame=camera_frame.depth,
+                    intrinsics=camera_frame.intrinsics,
+                )
                 arm_pose = self.pose_estimator.get_arm_pose()
                 t1 = time.perf_counter()
                 self._latency.record("pose", (t1 - t0) * 1000)
@@ -327,7 +338,8 @@ class TeleoperationController:
             self._running = False
             # self.robot.disable()
             # self.robot.disconnect()
-            cap.release()
+            if self._camera is not None:
+                self._camera.close()
             if self._arm_viz is not None:
                 self._arm_viz.close()
             if self._output_handle is not None:
@@ -507,6 +519,13 @@ def main():
     parser.add_argument("--verbose-ik", action="store_true", help="Print IK solver debug info")
     parser.add_argument("--no-gripper", action="store_true",
                         help="Position-only mode: no orientation, no gripper, no hand model")
+    # RGB-D camera options
+    parser.add_argument("--no-depth", action="store_true",
+                        help="Force webcam mode, disable RGB-D camera")
+    parser.add_argument("--depth-region", type=int, default=5,
+                        help="Depth averaging region size in pixels (default: 5)")
+    parser.add_argument("--depth-smooth", type=float, default=0.7,
+                        help="Depth temporal smoothing factor 0-1 (default: 0.7)")
     args = parser.parse_args()
 
     # Create components
@@ -522,6 +541,15 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = str(outputs_dir / f"joints_{timestamp}.csv")
 
+    # Create depth processor for RGB-D mode
+    depth_processor = None
+    if not args.no_depth:
+        depth_config = DepthConfig(
+            region_size=args.depth_region,
+            temporal_alpha=args.depth_smooth,
+        )
+        depth_processor = DepthProcessor(depth_config)
+
     # Configure based on --no-gripper flag
     # When set: position-only mode (no hand model, no orientation, no gripper)
     hand_model = None if args.no_gripper else "hand_landmarker.task"
@@ -530,6 +558,7 @@ def main():
         pose_model_path="pose_landmarker.task",
         hand_model_path=hand_model,
         use_right_arm=not args.left_arm,
+        depth_processor=depth_processor,
     )
 
     workspace_config = WorkspaceConfig(orientation_enabled=not args.no_gripper)
@@ -554,7 +583,8 @@ def main():
     )
 
     # Run
-    controller.run(camera_id=args.camera)
+    prefer_rgbd = not args.no_depth
+    controller.run(camera_id=args.camera, prefer_rgbd=prefer_rgbd)
 
     # Cleanup
     pose_estimator.close()

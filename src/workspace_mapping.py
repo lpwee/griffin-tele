@@ -59,6 +59,17 @@ class WorkspaceConfig:
         (-1.5, 1.5),   # yaw limits (±86°)
     )
 
+    # Metric mode: when True, input positions are in meters (RGB-D mode)
+    # When False, uses normalized coordinates (webcam mode)
+    metric_mode: bool = False
+
+    # Scale factor for metric mode (operator arm length to robot reach ratio)
+    # Typical human arm ~0.6m, robot reach ~0.5m
+    metric_scale: float = 0.8
+
+    # Z offset for metric mode (meters above robot base)
+    metric_z_offset: float = 0.15
+
 
 @dataclass
 class RobotTarget:
@@ -111,8 +122,11 @@ class WorkspaceMapper:
                 is_valid=False,
             )
 
-        # Map position from operator space to robot space
-        position = self._map_position(arm_pose.wrist_position)
+        # Map position based on whether we have metric or normalized coords
+        if arm_pose.is_metric:
+            position = self._map_position_metric(arm_pose.wrist_position)
+        else:
+            position = self._map_position(arm_pose.wrist_position)
 
         # Map orientation (direct mapping with possible offset)
         orientation = self._map_orientation(arm_pose.wrist_orientation)
@@ -158,6 +172,47 @@ class WorkspaceMapper:
         robot_y = self._denormalize(1.0 - op_x, cfg.robot_y_range)
         # Camera up/down (y) → robot up/down (z): flip because camera y increases downward
         robot_z = self._denormalize(1.0 - op_y, cfg.robot_z_range)
+
+        return np.array([robot_x, robot_y, robot_z])
+
+    def _map_position_metric(self, operator_pos: np.ndarray) -> np.ndarray:
+        """Map operator position (metric, camera frame) to robot workspace.
+
+        Used when arm_pose.is_metric=True (RGB-D mode). Input positions are
+        already in meters, relative to shoulder.
+
+        Camera frame: x=right, y=down, z=forward (into scene)
+        Robot frame: x=forward, y=left, z=up
+
+        Args:
+            operator_pos: Wrist position relative to shoulder in meters (camera frame).
+
+        Returns:
+            Robot target position in meters (robot frame).
+        """
+        cfg = self.config
+
+        # Coordinate transform: camera -> robot
+        # Camera z (forward/depth) -> Robot x (forward reach)
+        # Camera -x (left) -> Robot y (left/right, mirrored)
+        # Camera -y (up) -> Robot z (up/down, inverted)
+        robot_x = operator_pos[2]   # camera depth -> robot forward
+        robot_y = -operator_pos[0]  # camera right -> robot left (mirror)
+        robot_z = -operator_pos[1]  # camera down -> robot up (invert)
+
+        # Apply scale factor (operator arm length to robot reach)
+        robot_x = robot_x * cfg.metric_scale
+        robot_y = robot_y * cfg.metric_scale
+        robot_z = robot_z * cfg.metric_scale
+
+        # Apply offsets to center in robot workspace
+        robot_x += cfg.robot_x_range[0]  # offset forward to reach range
+        robot_z += cfg.metric_z_offset   # offset above robot base
+
+        # Clamp to robot workspace limits
+        robot_x = np.clip(robot_x, *cfg.robot_x_range)
+        robot_y = np.clip(robot_y, *cfg.robot_y_range)
+        robot_z = np.clip(robot_z, *cfg.robot_z_range)
 
         return np.array([robot_x, robot_y, robot_z])
 
