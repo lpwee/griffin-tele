@@ -14,16 +14,16 @@ class WorkspaceConfig:
     # Robot workspace bounds (meters)
     # Based on IK reachability analysis and 626mm working radius spec
     # Robot X = forward reach, Y = left/right, Z = up/down
-    robot_x_range: tuple[float, float] = (-0.40, 0.40)   # forward reach
-    robot_y_range: tuple[float, float] = (-0.25, 0.25)  # left/right
-    robot_z_range: tuple[float, float] = (0.05, 0.65)   # up/down
+    robot_x_range: tuple[float, float] = (-0.60, 0.60)   # forward reach
+    robot_y_range: tuple[float, float] = (-0.60, 0.60)  # left/right
+    robot_z_range: tuple[float, float] = (-0.30, 0.60)   # up/down
 
     # Operator workspace bounds (wrist position relative to shoulder)
     # These are in normalized camera coordinates, with shoulder as origin
     # Estimated from typical arm proportions (~60cm arm, ~200cm camera view)
     operator_x_range: tuple[float, float] = (-0.25, 0.25)  # arm reach left/right of shoulder
-    operator_y_range: tuple[float, float] = (-0.05, 0.30)  # wrist above(-) to below(+) shoulder
-    operator_z_range: tuple[float, float] = (-0.15, 0.40)  # arm extension depth
+    operator_y_range: tuple[float, float] = (-0.30, 0.30)  # wrist above(-) to below(+) shoulder
+    operator_z_range: tuple[float, float] = (-0.20, 0.40)  # arm extension depth
 
     # Smoothing factor (0 = no smoothing, 1 = infinite smoothing)
     smoothing_alpha: float = 0.3
