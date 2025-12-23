@@ -358,6 +358,10 @@ class RobotPOVVisualizer:
         # Offset all positions to the arm base
         positions = [pos + base_offset for pos in positions_local]
 
+        # Also offset the end effector transform
+        ee_transform_offset = ee_transform.copy()
+        ee_transform_offset[:3, 3] += base_offset
+
         # Draw links
         for i in range(len(positions) - 1):
             p1, p2 = positions[i], positions[i + 1]
@@ -395,51 +399,47 @@ class RobotPOVVisualizer:
         )
 
         # Draw gripper
-        self._draw_gripper(positions[-2], positions[-1], gripper_openness)
+        self._draw_gripper(ee_transform_offset, gripper_openness)
 
     def _draw_gripper(
-        self, wrist_pos: np.ndarray, ee_pos: np.ndarray, openness: float
+        self, ee_transform: np.ndarray, openness: float
     ):
         """Draw a simple gripper representation.
 
         Args:
-            wrist_pos: Wrist joint position.
-            ee_pos: End effector position.
+            ee_transform: 4x4 transformation matrix of end effector.
             openness: Gripper openness (0-1).
         """
-        direction = ee_pos - wrist_pos
-        length = np.linalg.norm(direction)
-        if length < 1e-6:
-            return
+        ee_pos = ee_transform[:3, 3]
 
-        direction = direction / length
+        # Use end effector orientation from transform
+        z_axis = ee_transform[:3, 2]  # Forward direction
+        y_axis = ee_transform[:3, 1]  # Perpendicular for fingers
 
-        # Perpendicular direction for gripper fingers
-        if abs(direction[2]) < 0.9:
-            perp = np.cross(direction, [0, 0, 1])
-        else:
-            perp = np.cross(direction, [1, 0, 0])
-        perp = perp / np.linalg.norm(perp)
-
-        # Gripper width based on openness
-        width = 0.02 + openness * 0.04  # 2cm to 6cm
+        # Gripper geometry
+        finger_length = 0.05
+        max_width = 0.04
+        min_width = 0.005
+        finger_offset = min_width + openness * (max_width - min_width)
 
         # Finger positions
-        finger1 = ee_pos + perp * width / 2
-        finger2 = ee_pos - perp * width / 2
+        finger1_base = ee_pos + y_axis * finger_offset
+        finger2_base = ee_pos - y_axis * finger_offset
+        finger1_tip = finger1_base + z_axis * finger_length
+        finger2_tip = finger2_base + z_axis * finger_length
 
-        # Draw gripper fingers
+        # Draw fingers
         self.ax.plot3D(
-            [ee_pos[0], finger1[0]],
-            [ee_pos[1], finger1[1]],
-            [ee_pos[2], finger1[2]],
+            [finger1_base[0], finger1_tip[0]],
+            [finger1_base[1], finger1_tip[1]],
+            [finger1_base[2], finger1_tip[2]],
             color=self.gripper_color,
             linewidth=2,
         )
         self.ax.plot3D(
-            [ee_pos[0], finger2[0]],
-            [ee_pos[1], finger2[1]],
-            [ee_pos[2], finger2[2]],
+            [finger2_base[0], finger2_tip[0]],
+            [finger2_base[1], finger2_tip[1]],
+            [finger2_base[2], finger2_tip[2]],
             color=self.gripper_color,
             linewidth=2,
         )
