@@ -15,22 +15,23 @@ from .pose_estimation import ArmPose
 class RobotPOVConfig:
     """Configuration for the Robot POV visualization."""
 
-    # Scene geometry (meters)
-    desk_width: float = 1.0
-    desk_depth: float = 0.6
-    desk_height: float = 0.0  # Ground level in viz
+    # Sink geometry (meters) - centered at origin
+    # Long side along Y axis, short side along X axis
+    sink_length: float = 1.0  # Y: -0.5 to 0.5
+    sink_width: float = 0.6   # X: -0.3 to 0.3
 
-    # Robot mounting (two arms on either side)
-    arm_base_separation: float = 0.6  # Distance between arm bases (left-right)
-    arm_base_forward: float = 0.1  # How far forward from viewer
+    # Robot arm base positions (meters)
+    # Right arm at (-0.3, -0.3, 0), Left arm at (0.3, 0.3, 0)
+    right_arm_base: tuple[float, float, float] = (-0.3, -0.3, 0.0)
+    left_arm_base: tuple[float, float, float] = (0.3, 0.3, 0.0)
 
     # Scaling
     robot_reach: float = 0.5
     operator_arm_length: float = 0.6
 
-    # Virtual camera view angle (top-down POV like the reference image)
-    view_elev: float = 70  # High elevation for top-down view
-    view_azim: float = 90  # Looking forward into workspace (X=left-right, Y=forward-back)
+    # View angles (top-down view)
+    view_elev: float = 70  # High angle for top-down view
+    view_azim: float = -90  # Looking along positive Y axis
 
 
 class RobotPOVVisualizer:
@@ -126,20 +127,18 @@ class RobotPOVVisualizer:
         self._compute_transforms()
 
     def _compute_transforms(self):
-        """Pre-compute the transformation matrices for operator to robot frame."""
-        # Frame rotation (camera → robot POV)
-        # Camera: X=right, Y=down, Z=forward (toward camera)
-        # Robot POV: X=right, Y=forward (into workspace), Z=up
-        #
-        # Mapping for top-down view:
-        # - Operator moves hand right → arm moves right (X → X)
-        # - Operator moves hand down (in camera) → arm moves forward into workspace (Y → Y)
-        # - Operator moves hand forward (depth) → arm moves up (Z → Z)
+        """Pre-compute the transformation matrices for operator to robot frame.
+
+        Must match workspace_mapping.py _map_position_metric():
+        - robot_x = camera_z  (forward reach = depth)
+        - robot_y = camera_x  (left/right, direct mapping)
+        - robot_z = -camera_y (up/down, inverted since camera Y is down)
+        """
         self.R_frame = np.array(
             [
-                [1, 0, 0],   # X stays X (right)
-                [0, 1, 0],   # Y stays Y (down in camera → forward in workspace)
-                [0, 0, 1],   # Z stays Z (depth → up)
+                [0, 0, 1],    # Robot X = Camera Z (forward/depth)
+                [1, 0, 0],    # Robot Y = Camera X (direct, no mirror)
+                [0, -1, 0],   # Robot Z = -Camera Y (up)
             ]
         )
 
@@ -211,34 +210,26 @@ class RobotPOVVisualizer:
 
     def _draw_scene(self):
         """Draw static scene elements (workspace, sink, arm bases, legend)."""
-        # Draw workspace surface (counter/desk)
-        hw = self.config.desk_width / 2
-        hd = self.config.desk_depth / 2
-        workspace_z = -0.05  # Slightly below arm level
+        # Sink dimensions - centered at origin
+        # Long side along Y: -0.5 to 0.5
+        # Short side along X: -0.3 to 0.3
+        sink_hx = self.config.sink_width / 2   # 0.3
+        sink_hy = self.config.sink_length / 2  # 0.5
+        sink_z = -0.05  # Slightly below arm level
 
-        # Workspace rectangle
-        desk_x = [-hw, hw, hw, -hw, -hw]
-        desk_y = [-hd, -hd, hd, hd, -hd]
-        desk_z = [workspace_z] * 5
-        self.ax.plot3D(desk_x, desk_y, desk_z, color="#666666", linewidth=2)
+        # Draw sink rectangle
+        sink_x = [-sink_hx, sink_hx, sink_hx, -sink_hx, -sink_hx]
+        sink_y = [-sink_hy, -sink_hy, sink_hy, sink_hy, -sink_hy]
+        sink_zs = [sink_z] * 5
+        self.ax.plot3D(sink_x, sink_y, sink_zs, color="#888888", linewidth=2)
 
-        # Draw sink (ellipse in center of workspace)
-        theta = np.linspace(0, 2 * np.pi, 30)
-        sink_rx, sink_ry = 0.15, 0.10
-        sink_x = sink_rx * np.cos(theta)
-        sink_y = sink_ry * np.sin(theta)
-        sink_z = np.full_like(theta, workspace_z)
-        self.ax.plot3D(sink_x, sink_y, sink_z, color="#888888", linewidth=1.5)
-
-        # Draw robot arm base markers (left and right)
-        # Arms are at the near edge (positive Y with azim=90 view)
-        base_sep = self.config.arm_base_separation / 2
-        base_y = hd - 0.05  # Near edge (positive Y)
-
-        # Left arm base
-        self._draw_arm_base(-base_sep, base_y, 0, "L")
-        # Right arm base
-        self._draw_arm_base(base_sep, base_y, 0, "R")
+        # Draw robot arm base markers
+        # Right arm at (-0.3, -0.3, 0)
+        rx, ry, rz = self.config.right_arm_base
+        self._draw_arm_base(rx, ry, rz, "R")
+        # Left arm at (0.3, 0.3, 0)
+        lx, ly, lz = self.config.left_arm_base
+        self._draw_arm_base(lx, ly, lz, "L")
 
         # Draw coordinate axes at center
         self._draw_coordinate_frame(np.eye(4), scale=0.06, show_labels=True)
@@ -302,10 +293,8 @@ class RobotPOVVisualizer:
         elbow_rel = elbow - shoulder
         wrist_abs = wrist_rel  # Already relative to shoulder
 
-        # Position at right arm base (positive Y with azim=90 view)
-        base_sep = self.config.arm_base_separation / 2
-        hd = self.config.desk_depth / 2
-        base_offset = np.array([base_sep, hd - 0.05, 0])
+        # Position at right arm base (-0.3, -0.3, 0)
+        base_offset = np.array(self.config.right_arm_base)
 
         shoulder_robot = base_offset.copy()
         elbow_robot = base_offset + self._operator_to_robot_frame(elbow_rel)
@@ -363,10 +352,8 @@ class RobotPOVVisualizer:
         # Compute joint positions
         positions_local, ee_transform = self.forward_kinematics(joint_angles)
 
-        # Position at right arm base (same as operator arm)
-        base_sep = self.config.arm_base_separation / 2
-        hd = self.config.desk_depth / 2
-        base_offset = np.array([base_sep, hd - 0.05, 0])
+        # Position at right arm base (-0.3, -0.3, 0)
+        base_offset = np.array(self.config.right_arm_base)
 
         # Offset all positions to the arm base
         positions = [pos + base_offset for pos in positions_local]

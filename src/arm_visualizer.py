@@ -73,12 +73,10 @@ class PiperArmVisualizer:
         # Joint colors
         self.joint_colors = ['#ff6b6b', '#ffa502', '#ffd93d', '#6bcb77', '#4d96ff', '#845ef7']
         self.link_color = '#4dabf7'
-        self.gripper_color = '#ff6b9d'
 
         # Store current joint angles
         self._current_angles = np.zeros(6)
         self._target_angles: Optional[np.ndarray] = None
-        self._gripper_open = 0.0
 
         # Interpolation state
         self._interpolation_counter = 0
@@ -145,7 +143,7 @@ class PiperArmVisualizer:
         Args:
             joint_angles: Current joint angles in radians (6,).
             target_position: Target end-effector position for visualization.
-            gripper_openness: Gripper openness (0-1).
+            gripper_openness: Gripper openness (0=closed, 1=open).
             is_valid: Whether the IK solution is valid.
             ik_error: IK position error in meters.
 
@@ -173,8 +171,6 @@ class PiperArmVisualizer:
             self._interpolation_counter += 1
         elif self._target_angles is not None:
             self._current_angles = self._target_angles.copy()
-
-        self._gripper_open = gripper_openness
 
         # Clear previous plot
         self.ax.cla()
@@ -216,11 +212,11 @@ class PiperArmVisualizer:
         ee_color = '#00ff00' if is_valid else '#ff0000'
         self.ax.scatter(*ee_pos, color=ee_color, s=150, marker='o', edgecolors='white', linewidths=2, zorder=6)
 
-        # Draw gripper
-        self._draw_gripper(positions[-2], positions[-1], gripper_openness)
-
         # Draw XYZ coordinate frame at end effector to show orientation
         self._draw_coordinate_frame(ee_transform, scale=0.08)
+
+        # Draw gripper
+        self._draw_gripper(ee_transform, gripper_openness)
 
         # Draw target position if provided
         if target_position is not None:
@@ -260,6 +256,65 @@ class PiperArmVisualizer:
 
         return img_bgr
 
+    def _draw_gripper(self, ee_transform: np.ndarray, openness: float):
+        """Draw parallel jaw gripper at end effector.
+
+        Args:
+            ee_transform: 4x4 transformation matrix of end effector.
+            openness: Gripper openness (0=closed, 1=open).
+        """
+        ee_pos = ee_transform[:3, 3]
+
+        # Gripper geometry
+        finger_length = 0.05  # 5cm finger length
+        max_width = 0.04  # 4cm max opening (each side from center)
+        min_width = 0.005  # 0.5cm min (nearly closed)
+
+        # Current finger offset from center based on openness
+        finger_offset = min_width + openness * (max_width - min_width)
+
+        # Use end effector orientation
+        # Z-axis points forward (gripper direction)
+        # Y-axis is the gripper opening direction (perpendicular)
+        z_axis = ee_transform[:3, 2]  # Forward direction
+        y_axis = ee_transform[:3, 1]  # Finger spread direction
+
+        # Finger base positions (at end effector, offset perpendicular)
+        finger1_base = ee_pos + y_axis * finger_offset
+        finger2_base = ee_pos - y_axis * finger_offset
+
+        # Finger tip positions (extended along Z-axis)
+        finger1_tip = finger1_base + z_axis * finger_length
+        finger2_tip = finger2_base + z_axis * finger_length
+
+        # Draw finger 1 (two lines to make it thicker-looking)
+        self.ax.plot3D(
+            [finger1_base[0], finger1_tip[0]],
+            [finger1_base[1], finger1_tip[1]],
+            [finger1_base[2], finger1_tip[2]],
+            color='#ff6b9d', linewidth=4, alpha=0.9
+        )
+
+        # Draw finger 2
+        self.ax.plot3D(
+            [finger2_base[0], finger2_tip[0]],
+            [finger2_base[1], finger2_tip[1]],
+            [finger2_base[2], finger2_tip[2]],
+            color='#ff6b9d', linewidth=4, alpha=0.9
+        )
+
+        # Draw connecting bar at base (palm)
+        self.ax.plot3D(
+            [finger1_base[0], finger2_base[0]],
+            [finger1_base[1], finger2_base[1]],
+            [finger1_base[2], finger2_base[2]],
+            color='#ff6b9d', linewidth=2, alpha=0.7
+        )
+
+        # Draw small spheres at finger tips
+        self.ax.scatter(*finger1_tip, color='#ff6b9d', s=30, zorder=7)
+        self.ax.scatter(*finger2_tip, color='#ff6b9d', s=30, zorder=7)
+
     def _draw_base(self):
         """Draw the robot base platform."""
         # Draw a cylinder-like base
@@ -275,40 +330,6 @@ class PiperArmVisualizer:
             np.outer(np.sin(theta), [0, r]),
             np.zeros((20, 2)),
             color='#444444', alpha=0.5
-        )
-
-    def _draw_gripper(self, wrist_pos: np.ndarray, ee_pos: np.ndarray, openness: float):
-        """Draw a simple gripper representation."""
-        # Direction from wrist to end effector
-        direction = ee_pos - wrist_pos
-        length = np.linalg.norm(direction)
-        if length < 1e-6:
-            return
-
-        direction = direction / length
-
-        # Perpendicular direction for gripper fingers
-        if abs(direction[2]) < 0.9:
-            perp = np.cross(direction, [0, 0, 1])
-        else:
-            perp = np.cross(direction, [1, 0, 0])
-        perp = perp / np.linalg.norm(perp)
-
-        # Gripper width based on openness
-        width = 0.02 + openness * 0.04  # 2cm to 6cm
-
-        # Finger positions
-        finger1 = ee_pos + perp * width / 2
-        finger2 = ee_pos - perp * width / 2
-
-        # Draw gripper fingers
-        self.ax.plot3D(
-            [ee_pos[0], finger1[0]], [ee_pos[1], finger1[1]], [ee_pos[2], finger1[2]],
-            color=self.gripper_color, linewidth=3
-        )
-        self.ax.plot3D(
-            [ee_pos[0], finger2[0]], [ee_pos[1], finger2[1]], [ee_pos[2], finger2[2]],
-            color=self.gripper_color, linewidth=3
         )
 
     def _draw_coordinate_frame(self, transform: np.ndarray, scale: float = 0.1, show_labels: bool = True):
@@ -365,7 +386,8 @@ def test_visualizer():
             t * 0.5,  # Continuous rotation
         ])
 
-        gripper = (np.sin(t) + 1) / 2  # 0 to 1
+        # Animate gripper (oscillate between open and closed)
+        gripper = (np.sin(t * 2) + 1) / 2  # 0 to 1
 
         img = viz.update(
             joint_angles=angles,
