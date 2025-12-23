@@ -183,11 +183,10 @@ class WorkspaceMapper:
         cfg = self.config
 
         # Coordinate transform: camera -> robot
-        # Camera z (forward/depth) -> Robot x (forward reach)
-        # Camera x (right) -> Robot y (right, direct mapping - no mirror)
-        # Camera -y (up) -> Robot z (up/down, inverted)
-        robot_x = operator_pos[2]   # camera depth -> robot forward
-        robot_y = operator_pos[0]   # camera right -> robot right (no mirror)
+        # Camera z points INTO scene (away from camera)
+        # When operator reaches TOWARD camera (negative Z), robot extends FORWARD (positive X)
+        robot_x = -operator_pos[2]  # negate: toward camera = forward reach
+        robot_y = operator_pos[0]   # camera right -> robot right
         robot_z = -operator_pos[1]  # camera down -> robot up (invert)
 
         # Apply scale factor (operator arm length to robot reach)
@@ -195,9 +194,8 @@ class WorkspaceMapper:
         robot_y = robot_y * cfg.metric_scale
         robot_z = robot_z * cfg.metric_scale
 
-        # Apply offsets to center in robot workspace
-        robot_x += cfg.robot_x_range[0]  # offset forward to reach range
-        robot_z += cfg.metric_z_offset   # offset above robot base
+        # Apply Z offset (raise above robot base)
+        robot_z += cfg.metric_z_offset
 
         # Clamp to robot workspace limits
         robot_x = np.clip(robot_x, *cfg.robot_x_range)

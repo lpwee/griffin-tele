@@ -129,15 +129,15 @@ class RobotPOVVisualizer:
     def _compute_transforms(self):
         """Pre-compute the transformation matrices for operator to robot frame.
 
-        Must match workspace_mapping.py _map_position_metric():
-        - robot_x = camera_z  (forward reach = depth)
+        Matches workspace_mapping.py _map_position_metric():
+        - robot_x = -camera_z (toward camera = robot forward)
         - robot_y = camera_x  (left/right, direct mapping)
         - robot_z = -camera_y (up/down, inverted since camera Y is down)
         """
         self.R_frame = np.array(
             [
-                [0, 0, 1],    # Robot X = Camera Z (forward/depth)
-                [1, 0, 0],    # Robot Y = Camera X (direct, no mirror)
+                [0, 0, -1],   # Robot X = -Camera Z (toward camera = robot forward)
+                [1, 0, 0],    # Robot Y = Camera X
                 [0, -1, 0],   # Robot Z = -Camera Y (up)
             ]
         )
