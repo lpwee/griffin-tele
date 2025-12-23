@@ -165,6 +165,7 @@ class OrbbecCamera(CameraInterface):
         """Open the Orbbec camera with color and depth streams."""
         try:
             from pyorbbecsdk import (
+                Context,
                 Pipeline,
                 Config,
                 OBSensorType,
@@ -176,104 +177,79 @@ class OrbbecCamera(CameraInterface):
             return False
 
         try:
-            self._pipeline = Pipeline()
+            # Initialize using Context -> query_devices -> Pipeline(device) pattern
+            context = Context()
+            device_list = context.query_devices()
+            if device_list.get_count() == 0:
+                print("[Camera] No Orbbec devices found")
+                return False
 
-            # Get device and sensor info
-            device = self._pipeline.get_device()
+            device = device_list.get_device_by_index(0)
+            self._pipeline = Pipeline(device)
+
+            # Get device info
             device_info = device.get_device_info()
             print(f"[Camera] Found Orbbec device: {device_info.get_name()}")
 
             # Create config
             self._config = Config()
 
-            # Enable color stream
-            color_profiles = self._pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-            color_profile = None
-            # First try: exact match with resolution and fps
-            for i in range(color_profiles.get_count()):
-                profile = color_profiles.get_video_stream_profile(i)
-                if (profile.get_width() == self._color_width and
-                    profile.get_height() == self._color_height and
-                    profile.get_format() == OBFormat.RGB and
-                    profile.get_fps() == self._fps):
-                    color_profile = profile
-                    break
-
-            # Second try: match resolution, any fps
-            if color_profile is None:
-                for i in range(color_profiles.get_count()):
-                    profile = color_profiles.get_video_stream_profile(i)
-                    if (profile.get_width() == self._color_width and
-                        profile.get_height() == self._color_height and
-                        profile.get_format() == OBFormat.RGB):
-                        color_profile = profile
-                        break
-
-            # Fall back to first available RGB profile
-            if color_profile is None:
-                for i in range(color_profiles.get_count()):
-                    profile = color_profiles.get_video_stream_profile(i)
-                    if profile.get_format() == OBFormat.RGB:
-                        color_profile = profile
-                        self._color_width = profile.get_width()
-                        self._color_height = profile.get_height()
-                        break
-
-            if color_profile is None:
-                print("[Camera] No suitable color profile found")
-                return False
-
+            # Enable color stream (MJPG @ 30fps)
+            color_profile_list = self._pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+            color_profile = color_profile_list.get_video_stream_profile(640, 480, OBFormat.MJPG, 30)
             self._config.enable_stream(color_profile)
-            actual_color_fps = color_profile.get_fps()
-            print(f"[Camera] Color stream: {self._color_width}x{self._color_height} @ {actual_color_fps}fps")
+            print(f"[Camera] Color Stream: 640x480 @ {color_profile.get_fps()}fps MJPG")
 
-            # Enable depth stream
-            depth_profiles = self._pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+            # Enable depth stream (try Y12 first, fallback to Y11)
+            depth_profile_list = self._pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
             depth_profile = None
-            # First try: exact match with resolution and fps
-            for i in range(depth_profiles.get_count()):
-                profile = depth_profiles.get_video_stream_profile(i)
-                if (profile.get_width() == self._depth_width and
-                    profile.get_height() == self._depth_height and
-                    profile.get_fps() == self._fps):
-                    depth_profile = profile
-                    break
-
-            # Second try: match resolution, any fps
-            if depth_profile is None:
-                for i in range(depth_profiles.get_count()):
-                    profile = depth_profiles.get_video_stream_profile(i)
-                    if (profile.get_width() == self._depth_width and
-                        profile.get_height() == self._depth_height):
-                        depth_profile = profile
-                        break
-
-            # Fall back to first available depth profile
-            if depth_profile is None:
-                depth_profile = depth_profiles.get_video_stream_profile(0)
-                self._depth_width = depth_profile.get_width()
-                self._depth_height = depth_profile.get_height()
+            try:
+                depth_profile = depth_profile_list.get_video_stream_profile(640, 480, OBFormat.Y12, 30)
+                print(f"[Camera] Depth Stream: 640x480 @ {depth_profile.get_fps()}fps Y12")
+            except Exception:
+                depth_profile = depth_profile_list.get_video_stream_profile(640, 480, OBFormat.Y11, 30)
+                print(f"[Camera] Depth Stream: 640x480 @ {depth_profile.get_fps()}fps Y11")
 
             self._config.enable_stream(depth_profile)
-            actual_depth_fps = depth_profile.get_fps()
-            print(f"[Camera] Depth stream: {self._depth_width}x{self._depth_height} @ {actual_depth_fps}fps")
-
-            # Enable depth-to-color alignment
-            self._config.set_align_mode(OBAlignMode.SW_MODE)
 
             # Start pipeline
             self._pipeline.start(self._config)
 
-            # Get camera intrinsics from color stream
+            # Update resolution to match actual config
+            self._color_width = 640
+            self._color_height = 480
+
+            # Warmup: discard first few frames while camera initializes
+            print("[Camera] Warming up (10 frames)...")
+            for i in range(10):
+                frameset = self._pipeline.wait_for_frames(1000)
+                if frameset is not None and frameset.get_color_frame() is not None:
+                    break
+            print("[Camera] Warmup complete")
+
+            # Get camera intrinsics from color stream (after warmup for reliable values)
             camera_param = self._pipeline.get_camera_param()
             color_intrinsic = camera_param.rgb_intrinsic
+            fx = color_intrinsic.fx
+            fy = color_intrinsic.fy
+            cx = color_intrinsic.cx
+            cy = color_intrinsic.cy
+
+            # If intrinsics are invalid, use reasonable defaults for 640x480
+            if fx == 0.0 or fy == 0.0:
+                print("[Camera] Warning: Invalid intrinsics from SDK, using defaults for 640x480")
+                fx = 600.0  # Approximate focal length for 640x480
+                fy = 600.0
+                cx = 320.0  # Principal point at center
+                cy = 240.0
+
             self._intrinsics = CameraIntrinsics(
-                fx=color_intrinsic.fx,
-                fy=color_intrinsic.fy,
-                cx=color_intrinsic.cx,
-                cy=color_intrinsic.cy,
-                width=int(color_intrinsic.width),
-                height=int(color_intrinsic.height),
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                width=self._color_width,
+                height=self._color_height,
             )
             print(f"[Camera] Intrinsics: fx={self._intrinsics.fx:.1f}, fy={self._intrinsics.fy:.1f}, "
                   f"cx={self._intrinsics.cx:.1f}, cy={self._intrinsics.cy:.1f}")
@@ -292,8 +268,8 @@ class OrbbecCamera(CameraInterface):
             return None
 
         try:
-            # Wait for frameset with 100ms timeout
-            frameset = self._pipeline.wait_for_frames(100)
+            # Wait for frameset with timeout
+            frameset = self._pipeline.wait_for_frames(1000)
             if frameset is None:
                 return None
 
@@ -305,17 +281,22 @@ class OrbbecCamera(CameraInterface):
             # Get depth frame
             depth_frame = frameset.get_depth_frame()
 
-            # Convert color frame to numpy RGB array
-            color_data = np.asarray(color_frame.get_data())
-            # Reshape based on format
-            rgb_frame = color_data.reshape((color_frame.get_height(), color_frame.get_width(), 3))
+            # Convert color frame to numpy RGB array (from MJPG)
+            color_data = np.frombuffer(color_frame.get_data(), dtype=np.uint8)
+            # Decode MJPG to BGR then convert to RGB
+            bgr_frame = cv2.imdecode(color_data, cv2.IMREAD_COLOR)
+            if bgr_frame is None:
+                print(f"[Camera] MJPG decode failed, data size: {len(color_data)}")
+                return None
+            rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
 
             # Convert depth frame to numpy array (uint16, in mm)
             depth_data = None
             if depth_frame is not None:
-                depth_data = np.asarray(depth_frame.get_data())
-                depth_data = depth_data.reshape((depth_frame.get_height(), depth_frame.get_width()))
-                depth_data = depth_data.astype(np.uint16)
+                height = depth_frame.get_height()
+                width = depth_frame.get_width()
+                # Use frombuffer with uint16 dtype for 16-bit depth (Y12/Y16 formats)
+                depth_data = np.frombuffer(depth_frame.get_data(), dtype=np.uint16).reshape((height, width))
 
             # Calculate timestamp
             timestamp_ms = int((time.time() - self._start_time) * 1000)

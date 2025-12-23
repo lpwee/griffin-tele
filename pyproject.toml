@@ -3,7 +3,7 @@ name = "griffin-tele"
 version = "0.1.0"
 description = "Camera-based teleoperation for AgileX Piper arm"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "ikpy>=3.3.4",
     "jupyter>=1.1.1",
@@ -13,7 +13,6 @@ dependencies = [
     "opencv-python>=4.10.0",
     "pandas>=2.3.3",
     "piper-sdk>=0.6.1",
-    "pyorbbecsdk>=1.0.0",
 ]
 
 [project.scripts]
