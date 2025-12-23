@@ -567,10 +567,6 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pandas" },
     { name = "piper-sdk" },
-]
-
-[package.optional-dependencies]
-rgbd = [
     { name = "pyorbbecsdk" },
 ]
 
@@ -584,7 +580,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.10.0" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "piper-sdk", specifier = ">=0.6.1" },
-    { name = "pyorbbecsdk", marker = "extra == 'rgbd'", specifier = ">=1.0.0" },
+    { name = "pyorbbecsdk", specifier = ">=1.0.0" },
 ]
 
 [[package]]

@@ -13,10 +13,6 @@ dependencies = [
     "opencv-python>=4.10.0",
     "pandas>=2.3.3",
     "piper-sdk>=0.6.1",
-]
-
-[project.optional-dependencies]
-rgbd = [
     "pyorbbecsdk>=1.0.0",
 ]
 
