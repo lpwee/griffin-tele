@@ -14,16 +14,16 @@ class WorkspaceConfig:
     # Robot workspace bounds (meters)
     # Based on IK reachability analysis and 626mm working radius spec
     # Robot X = forward reach, Y = left/right, Z = up/down
-    robot_x_range: tuple[float, float] = (0.15, 0.40)   # forward reach
-    robot_y_range: tuple[float, float] = (-0.25, 0.25)  # left/right
-    robot_z_range: tuple[float, float] = (0.05, 0.35)   # up/down
+    robot_x_range: tuple[float, float] = (-0.60, 0.60)   # forward reach
+    robot_y_range: tuple[float, float] = (-0.60, 0.60)  # left/right
+    robot_z_range: tuple[float, float] = (-0.30, 0.60)   # up/down
 
     # Operator workspace bounds (wrist position relative to shoulder)
     # These are in normalized camera coordinates, with shoulder as origin
     # Estimated from typical arm proportions (~60cm arm, ~200cm camera view)
     operator_x_range: tuple[float, float] = (-0.25, 0.25)  # arm reach left/right of shoulder
-    operator_y_range: tuple[float, float] = (-0.05, 0.30)  # wrist above(-) to below(+) shoulder
-    operator_z_range: tuple[float, float] = (-0.15, 0.40)  # arm extension depth
+    operator_y_range: tuple[float, float] = (-0.30, 0.30)  # wrist above(-) to below(+) shoulder
+    operator_z_range: tuple[float, float] = (-0.20, 0.40)  # arm extension depth
 
     # Smoothing factor (0 = no smoothing, 1 = infinite smoothing)
     smoothing_alpha: float = 0.3
@@ -46,18 +46,8 @@ class WorkspaceConfig:
 
     # Orientation scale factors (how much operator movement affects robot)
     # Values < 1 reduce sensitivity, > 1 increase it
-    orientation_scale: tuple[float, float, float] = (
-        0.5,  # roll scale (wrist twist)
-        0.5,  # pitch scale (arm tilt)
-        1.0,  # yaw scale (arm swing)
-    )
-
-    # Orientation limits (clamp mapped orientation to safe range, in radians)
-    orientation_limits: tuple[tuple[float, float], tuple[float, float], tuple[float, float]] = (
-        (-1.5, 1.5),   # roll limits (±86°)
-        (-1.0, 1.5),   # pitch limits (-57° to +86°)
-        (-1.5, 1.5),   # yaw limits (±86°)
-    )
+    # Set to 1.0 for direct mapping - IK will handle constraints
+    orientation_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
     # Metric mode: when True, input positions are in meters (RGB-D mode)
     # When False, uses normalized coordinates (webcam mode)
@@ -149,7 +139,7 @@ class WorkspaceMapper:
         """Map operator position to robot workspace.
 
         Note: Operator position is wrist relative to shoulder in camera coords:
-        - x: left (-) to right (+) of shoulder
+        - x: right (-) to left (+) of shoulder
         - y: above (-) to below (+) shoulder
         - z: depth relative to shoulder plane (negative = closer to camera)
 
@@ -169,7 +159,7 @@ class WorkspaceMapper:
         # Camera depth (z) → robot forward (x): closer to camera = less reach
         robot_x = self._denormalize(1.0 - op_z, cfg.robot_x_range)
         # Camera left/right (x) → robot left/right (y): flip for mirror effect
-        robot_y = self._denormalize(1.0 - op_x, cfg.robot_y_range)
+        robot_y = self._denormalize(op_x, cfg.robot_y_range)
         # Camera up/down (y) → robot up/down (z): flip because camera y increases downward
         robot_z = self._denormalize(1.0 - op_y, cfg.robot_z_range)
 
@@ -182,7 +172,7 @@ class WorkspaceMapper:
         already in meters, relative to shoulder.
 
         Camera frame: x=right, y=down, z=forward (into scene)
-        Robot frame: x=forward, y=left, z=up
+        Robot frame: x=forward, y=right(+)/left(-), z=up
 
         Args:
             operator_pos: Wrist position relative to shoulder in meters (camera frame).
@@ -193,11 +183,10 @@ class WorkspaceMapper:
         cfg = self.config
 
         # Coordinate transform: camera -> robot
-        # Camera z (forward/depth) -> Robot x (forward reach)
-        # Camera -x (left) -> Robot y (left/right, mirrored)
-        # Camera -y (up) -> Robot z (up/down, inverted)
-        robot_x = operator_pos[2]   # camera depth -> robot forward
-        robot_y = -operator_pos[0]  # camera right -> robot left (mirror)
+        # Camera z points INTO scene (away from camera)
+        # When operator reaches TOWARD camera (negative Z), robot extends FORWARD (positive X)
+        robot_x = -operator_pos[2]  # negate: toward camera = forward reach
+        robot_y = operator_pos[0]   # camera right -> robot right
         robot_z = -operator_pos[1]  # camera down -> robot up (invert)
 
         # Apply scale factor (operator arm length to robot reach)
@@ -205,9 +194,8 @@ class WorkspaceMapper:
         robot_y = robot_y * cfg.metric_scale
         robot_z = robot_z * cfg.metric_scale
 
-        # Apply offsets to center in robot workspace
-        robot_x += cfg.robot_x_range[0]  # offset forward to reach range
-        robot_z += cfg.metric_z_offset   # offset above robot base
+        # Apply Z offset (raise above robot base)
+        robot_z += cfg.metric_z_offset
 
         # Clamp to robot workspace limits
         robot_x = np.clip(robot_x, *cfg.robot_x_range)
@@ -258,11 +246,6 @@ class WorkspaceMapper:
         robot_roll += cfg.orientation_offset[0]
         robot_pitch += cfg.orientation_offset[1]
         robot_yaw += cfg.orientation_offset[2]
-
-        # Clamp to safe limits
-        robot_roll = np.clip(robot_roll, *cfg.orientation_limits[0])
-        robot_pitch = np.clip(robot_pitch, *cfg.orientation_limits[1])
-        robot_yaw = np.clip(robot_yaw, *cfg.orientation_limits[2])
 
         # Normalize angles to [-pi, pi] range
         result = np.array([robot_roll, robot_pitch, robot_yaw])
