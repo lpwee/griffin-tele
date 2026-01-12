@@ -30,7 +30,7 @@ curl -o hand_landmarker.task -q https://storage.googleapis.com/mediapipe-models/
 
 
 ## Planning
-- [ ] RGB Camera for now, do we want RGB-D?
+- [x] RGB Camera for now, do we want RGB-D?
 - [x] Get Pose Detection Model working
 - [x] Get Hand Detection Model working
 - [x] Grab URDF files from the [piper_ros repository](https://github.com/agilexrobotics/piper_ros?tab=readme-ov-file#0-%E6%B3%A8%E6%84%8Furdf%E7%89%88%E6%9C%AC)
@@ -58,9 +58,24 @@ Possible approaches to Z coordinate problem
 - [ ] DepthAnything
 - [ ] RGB-D
 
-
 RGB ONLY ROUTE
 1. Mediapipe output -> Pixels (based on image width)
 2. Pixels to real world(arm) opencv calibration(chessboard thingy)
 3. Derive the intrinsics (which is a multiplier from pixel space to real world space)
 
+
+## Considerations
+1. Why only take end effector(wrist) position?
+  - Piper Arm has 6DOF, Human arm is 7DOF, not directly 1-1 mappable
+  - Consider the action of reaching ~15cm infront of your shoulder, human elbow will point down, but piper arm's "elbow" will point upwards, 1-1 not really feasible
+  - **Therefore, only take end effector and solve IK to preserve operator intuitive-ness**
+
+2. Possible orientations solutions
+  - [x] RGB-D
+  - [ ] IMU
+    - Power Supply to IMU
+  - [ ] DepthAnything
+    - Slow
+  - [ ] MoCap Balls
+
+3. 
