@@ -11,10 +11,11 @@ from .pose_estimation import ArmPose
 class WorkspaceConfig:
     """Configuration for workspace mapping."""
 
-    # Robot workspace bounds (meters)
-    robot_x_range: tuple[float, float] = (-0.4, 0.4)  # left/right
-    robot_y_range: tuple[float, float] = (0.1, 0.5)   # forward
-    robot_z_range: tuple[float, float] = (0.0, 0.4)   # up/down
+    # Robot workspace bounds (meters). Kept inside the Piper's reachable
+    # envelope (~0.63m reach) so IK can solve everywhere in the box.
+    robot_x_range: tuple[float, float] = (-0.25, 0.25)  # left/right
+    robot_y_range: tuple[float, float] = (0.15, 0.42)   # forward
+    robot_z_range: tuple[float, float] = (0.05, 0.35)   # up/down
 
     # Operator workspace bounds (normalized 0-1 coordinates from camera)
     # These define the "active zone" in front of the camera

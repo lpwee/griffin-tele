@@ -140,6 +140,15 @@ class TeleoperationController:
                             self._last_valid_joints,
                         )
 
+                        if not joint_angles.is_valid:
+                            # Orientation may be unreachable; keep tracking
+                            # the position with a free wrist orientation
+                            joint_angles = self.ik_solver.solve(
+                                robot_target.position,
+                                None,
+                                self._last_valid_joints,
+                            )
+
                         if joint_angles.is_valid:
                             # Send to robot
                             self.robot.set_joint_positions(

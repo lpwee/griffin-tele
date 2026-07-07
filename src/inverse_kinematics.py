@@ -62,6 +62,16 @@ class PiperIK:
         (-2.618, 2.618),   # Joint 6: ±150°
     ]
 
+    # Initial guesses tried in order when solving without (or after a failed)
+    # warm start. The solver is a local optimizer, so a few diverse elbow
+    # configurations avoid most local minima.
+    RESTART_SEEDS = [
+        np.zeros(6),
+        np.array([0.0, -0.8, 0.8, 0.0, 0.5, 0.0]),
+        np.array([0.0, 0.8, -0.8, 0.0, -0.5, 0.0]),
+        np.array([0.0, -1.2, 1.2, 0.0, 0.0, 0.0]),
+    ]
+
     def __init__(self):
         """Initialize IK solver."""
         if not IKPY_AVAILABLE:
@@ -73,11 +83,13 @@ class PiperIK:
         # Build kinematic chain using IKPy
         self._chain = self._build_chain()
 
-        # Store home position (all zeros after offset)
-        self._home_angles = np.zeros(6)
-
     def _build_chain(self) -> "ikpy.chain.Chain":
-        """Build IKPy kinematic chain from DH parameters."""
+        """Build IKPy kinematic chain from DH parameters.
+
+        Each modified-DH link transform is Rx(alpha) * Tx(a) * Rz(theta) * Tz(d)
+        with theta = q + theta_offset. The fixed part Rx(alpha)*Tx(a)*Tz(d)*Rz(theta_offset)
+        is folded into the URDF link origin, leaving Rz(q) as the joint rotation.
+        """
         links = []
 
         # Base link (fixed)
@@ -86,11 +98,24 @@ class PiperIK:
         # Add each joint
         for i, (alpha, a, d, theta_offset) in enumerate(self.DH_PARAMS):
             bounds = self.JOINT_LIMITS[i]
+
+            ca, sa = np.cos(alpha), np.sin(alpha)
+            co, so = np.cos(theta_offset), np.sin(theta_offset)
+            rx = np.array([[1, 0, 0], [0, ca, -sa], [0, sa, ca]])
+            rz = np.array([[co, -so, 0], [so, co, 0], [0, 0, 1]])
+            origin_rotation = rx @ rz
+            origin_translation = rx @ np.array([a, 0.0, d])
+
+            # Decompose to URDF rpy (extrinsic: Rz(yaw) * Ry(pitch) * Rx(roll))
+            roll = np.arctan2(origin_rotation[2, 1], origin_rotation[2, 2])
+            pitch = -np.arcsin(np.clip(origin_rotation[2, 0], -1.0, 1.0))
+            yaw = np.arctan2(origin_rotation[1, 0], origin_rotation[0, 0])
+
             links.append(
                 ikpy.link.URDFLink(
                     name=f"joint_{i + 1}",
-                    origin_translation=[a, 0, d],
-                    origin_orientation=[alpha, 0, 0],
+                    origin_translation=origin_translation,
+                    origin_orientation=[roll, pitch, yaw],
                     rotation=[0, 0, 1],  # Rotation around Z axis
                     bounds=bounds,
                 )
@@ -102,7 +127,7 @@ class PiperIK:
                 name="end_effector",
                 origin_translation=[0, 0, 0],
                 origin_orientation=[0, 0, 0],
-                rotation=None,
+                joint_type="fixed",
             )
         )
 
@@ -124,42 +149,51 @@ class PiperIK:
             target_position: Target position [x, y, z] in meters.
             target_orientation: Target orientation [roll, pitch, yaw] in radians.
                               If None, only position is considered.
-            initial_angles: Initial guess for joint angles. Uses previous
-                          solution or home position if None.
+            initial_angles: Initial guess for joint angles, tried before the
+                          built-in restart seeds.
 
         Returns:
             JointAngles with solution or invalid result if no solution found.
         """
-        # Build target transformation matrix
-        target_matrix = np.eye(4)
-        target_matrix[:3, 3] = target_position
+        guesses = []
+        if initial_angles is not None:
+            guesses.append(initial_angles)
+        guesses.extend(self.RESTART_SEEDS)
 
-        if target_orientation is not None:
-            target_matrix[:3, :3] = self._euler_to_rotation(target_orientation)
+        best: Optional[JointAngles] = None
+        for guess in guesses:
+            attempt = self._solve_once(target_position, target_orientation, guess)
+            if attempt.is_valid:
+                return attempt
+            if best is None or attempt.error < best.error:
+                best = attempt
+        return best
 
-        # Set initial guess
-        if initial_angles is None:
-            initial_angles = self._home_angles
-
+    def _solve_once(
+        self,
+        target_position: np.ndarray,
+        target_orientation: Optional[np.ndarray],
+        initial_angles: np.ndarray,
+    ) -> JointAngles:
+        """Run a single IK optimization from one initial guess."""
         # Pad initial angles for IKPy (includes base and end effector)
         initial_full = np.zeros(8)
         initial_full[1:7] = initial_angles
 
-        # Solve IK
         try:
             if target_orientation is not None:
                 # Full pose IK
                 result = self._chain.inverse_kinematics(
-                    target_matrix,
-                    initial_position=initial_full,
+                    target_position,
+                    self._euler_to_rotation(target_orientation),
                     orientation_mode="all",
+                    initial_position=initial_full,
                 )
             else:
                 # Position-only IK
                 result = self._chain.inverse_kinematics(
-                    target_matrix,
+                    target_position,
                     initial_position=initial_full,
-                    orientation_mode=None,
                 )
 
             # Extract joint angles (skip base and end effector)
@@ -178,9 +212,6 @@ class PiperIK:
             )
 
             is_valid = position_error < 0.01 and in_bounds  # 1cm tolerance
-
-            if is_valid:
-                self._home_angles = angles.copy()
 
             return JointAngles(
                 angles=angles,
@@ -212,7 +243,7 @@ class PiperIK:
     def _euler_to_rotation(self, euler: np.ndarray) -> np.ndarray:
         """Convert Euler angles (roll, pitch, yaw) to rotation matrix.
 
-        Uses XYZ convention (roll around X, pitch around Y, yaw around Z).
+        Uses ZYX convention: R = Rz(yaw) @ Ry(pitch) @ Rx(roll).
         """
         roll, pitch, yaw = euler
 

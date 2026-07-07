@@ -1,9 +1,9 @@
 """Camera capture utilities for local and network streams."""
 
+import os
 from typing import Optional, Tuple
 import cv2
 import numpy as np
-import urllib.request
 
 
 class CameraCapture:
@@ -16,6 +16,7 @@ class CameraCapture:
             source: Camera source. Can be:
                 - Integer camera ID as string (e.g., "0", "1")
                 - HTTP/RTSP URL (e.g., "http://localhost:5000/video_feed")
+                - Path to a video file (e.g., "videos/test.mp4")
         """
         self.source = source
         self.cap: Optional[cv2.VideoCapture] = None
@@ -31,13 +32,16 @@ class CameraCapture:
             # For network streams, OpenCV can handle MJPEG streams directly
             self.cap = cv2.VideoCapture(self.source)
         else:
-            # Local camera
+            # Local camera or video file
             try:
                 camera_id = int(self.source)
                 self.cap = cv2.VideoCapture(camera_id)
             except ValueError:
-                print(f"Error: Invalid camera source '{self.source}'")
-                return False
+                if os.path.exists(self.source):
+                    self.cap = cv2.VideoCapture(self.source)
+                else:
+                    print(f"Error: Invalid camera source '{self.source}'")
+                    return False
 
         if self.cap is None or not self.cap.isOpened():
             return False
